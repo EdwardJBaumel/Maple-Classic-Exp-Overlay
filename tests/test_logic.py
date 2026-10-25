@@ -446,7 +446,9 @@ check("runs never carry a note, even with notes on the log lines",
       all("note" not in r for r in log.runs) and "MY-PRIVATE-NOTE" not in json.dumps(log.runs))
 src = inspect.getsource(m)
 check("privacy guard: the overlay reaches the internet in exactly these places (a new one needs a look at what it sends)",
-      src.count("urlopen(") == 2 and src.count("webbrowser.open(") == 3 and "requests." not in src and "socket." not in src)
+      src.count("urlopen(") == 3 and src.count("webbrowser.open(") == 3 and "requests." not in src and "socket." not in src)
+check("the health report sender never reads the log, notes or the map", "entries" not in inspect.getsource(m.post_health)
+      and "autolog" not in inspect.getsource(m.App._count_health) and "map" not in inspect.getsource(m.App._count_health).lower().replace("healthlog", ""))
 check("what's sent never reads the log's lines, and the bug report never includes notes",
       "entries" not in inspect.getsource(m.post_runs) and "note" not in inspect.getsource(m.post_runs).lower()
       and "entries" not in inspect.getsource(m.check_for_update)
@@ -472,6 +474,11 @@ m.urllib.request.urlopen = real_urlopen
 check("while testing (MAPLE_EXP_DATA is set) nothing can be sent to the real site", blocked and not sent)
 check("no test fixture has sharing switched on (a launch on one would send its made-up runs)",
       not any(json.loads(f.read_text(encoding="utf-8")).get("share_runs") for f in (Path(__file__).parent / "upgrade").glob("*/config.json")))
+
+check("no test fixture has health reports switched on (a launch on one would send made-up numbers)",
+      not any(json.loads(f.read_text(encoding="utf-8")).get("share_health") for f in (Path(__file__).parent / "upgrade").glob("*/config.json")))
+check("every upgrade fixture is asked about health reports (none has an answer yet)",
+      not any("share_health" in json.loads(f.read_text(encoding="utf-8")) for f in (Path(__file__).parent / "upgrade").glob("*/config.json")))
 
 # a copy of the log is kept for each day, so a recent one is always there
 folder = Path(tempfile.mkdtemp())

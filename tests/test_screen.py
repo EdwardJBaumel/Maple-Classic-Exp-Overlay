@@ -855,6 +855,59 @@ finally:
     m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
     m.tesseract_candidates, m.read_map_name = real_candidates, real_map
 
+# ---- health reports count each look once, by what happened to the EXP bar (exp_kind), and note which other readers tried
+def kind_of_look(templates=True, tesseract=None, setup=None):
+    r = part_reader(templates)
+    r._game_rect = lambda: (0, 0, fw, fh)
+    r.own_rect = (-5000, -5000, 10, 10)
+    if setup:
+        setup(r)
+    saved = m.tesseract_candidates
+    if tesseract is not None:
+        m.tesseract_candidates = lambda img, lay: tesseract
+    try:
+        return r.read(fscreen)
+    finally:
+        m.tesseract_candidates = saved
+
+
+before_tess = (m.TESS, m.tesseract_ok)
+m.TESS, m.tesseract_ok = None, False
+check("health: a clear bar is 'read'", kind_of_look().exp_kind == "read")
+check("health: unsure digits with no Tesseract answer are 'unclear'", kind_of_look(templates=False, tesseract=[]).exp_kind == "unclear")
+check("health: unsure digits that only Tesseract can give are 'tesseract'",
+      kind_of_look(templates=False, tesseract=[(68601, 71.68)]).exp_kind == "tesseract")
+check("health: a bar with nothing on it is 'not_found'",
+      m.ScreenReader(m.DigitTemplates.load())._read((np.zeros((60, 400, 3), np.uint8), 0, 0), "game")[0].exp_kind == "not_found"
+      and m.ScreenReader(m.DigitTemplates.load())._read(None, "game")[0].exp_kind == "not_found")
+r = m.ScreenReader(m.DigitTemplates.load())
+check("health: a percentage-only bar is 'read' and says it is percentage-only",
+      all((lambda g: g.exp_kind == "read" and g.percent_only)(r._read((percent_only(cv2.imread(str(f))), 0, 0), "game")[0])
+          for f in sorted(FRAMES.glob("exp_*.png"))))
+r = part_reader()
+r.hwnd = None
+check("health: no game window is 'no_window'", r.read(fscreen).exp_kind == "no_window")
+r = m.ScreenReader(m.DigitTemplates.load())
+r.use_region(None)
+check("health: no selected area is 'no_window'", r.read(fscreen).exp_kind == "no_window")
+r = part_reader()
+r._game_rect = lambda: (0, 0, fw, fh)
+r.box, r.own_rect = (0, 0, fw, fh), (0, 0, fw, fh)
+check("health: our own window over the bar is 'covered'", r.read(fscreen).exp_kind == "covered")
+r = part_reader()
+r._game_rect = lambda: (0, 0, fw, fh)
+blank_screen = FakeScreen(np.zeros_like(frame))
+check("health: a screen with no bar is 'not_found'", r.read(blank_screen).exp_kind == "not_found")
+got = kind_of_look(setup=lambda r: (setattr(r, "_read_potion_bar", lambda *a, **k: (_ for _ in ()).throw(ValueError("x"))),
+                                    setattr(r, "next_bar", 0.0)))
+check("health: a reader that failed is noted as tried and not worked", ("potions", False) in got.tries)
+got = kind_of_look(setup=lambda r: (setattr(r, "_read_potion_bar", lambda *a, **k: ()), setattr(r, "next_bar", 0.0)))
+check("health: a potion bar look that saw nothing is noted as tried and not read", got.tries == (("potions", False),))
+got = kind_of_look(setup=lambda r: (setattr(r, "_read_potion_bar", lambda *a, **k: ("slot",)), setattr(r, "next_bar", 0.0)))
+check("health: a potion bar look that read something is noted as read", got.tries == (("potions", True),))
+
+m.TESS, m.tesseract_ok = before_tess
+
 rect_f = (0, 0, fw, fh)
 for cap_class, wanted in ((ScreenCapture, False), (SeeThrough, True)):
     r = m.ScreenReader(m.DigitTemplates.load())
