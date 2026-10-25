@@ -49,6 +49,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from capture import ScreenCapture, as_capture, grab  # noqa: F401
+import digits_v2  # noqa: F401  (the digit reader v2: shadow mode uses it)
 import healthlog
 import level_ocr
 import ocr
