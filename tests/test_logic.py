@@ -229,6 +229,16 @@ check("a compact shape that doesn't exist falls back to Square, and a damaged se
 m.CONFIG_PATH.write_text(json.dumps({"compact_shape": "bar", "seen_version": "0.9.9-beta"}))
 cfg = m.load_config()
 check("a chosen compact shape and the last seen version are kept", cfg["compact_shape"] == "bar" and cfg["seen_version"] == "0.9.9-beta")
+m.CONFIG_PATH.write_text(json.dumps({"shadow_reader": "no", "exp_v2_spots": {"1920x1080/11": [10, 900, 400, 1000]}}))
+cfg = m.load_config()
+check("shadow_reader is on unless a real false is saved; a good v2 spot is kept",
+      cfg["shadow_reader"] is True and cfg["exp_v2_spots"] == {"1920x1080/11": [10, 900, 400, 1000]})
+m.CONFIG_PATH.write_text(json.dumps({"shadow_reader": False}))
+check("shadow_reader false is kept (the switch the developer can tell a player to use)", m.load_config()["shadow_reader"] is False)
+for name, bad in (("not a dict", [1, 2]), ("a bad key", {"big": [1, 2, 3, 4]}), ("a short box", {"1920x1080/11": [1, 2, 3]}),
+                  ("floats", {"1920x1080/11": [1, 2, 3, 4.5]}), ("too many", {f"{1000 + i}x700/9": [1, 2, 3, 4] for i in range(9)})):
+    m.CONFIG_PATH.write_text(json.dumps({"exp_v2_spots": bad}))
+    check(f"a damaged exp_v2_spots ({name}) is dropped", "exp_v2_spots" not in m.load_config())
 check(f"the right OS backend is made for {sys.platform} ({type(m.PLATFORM).__name__})",
       type(m.PLATFORM).__name__ == {"win32": "WindowsPlatform", "darwin": "MacPlatform"}.get(sys.platform))
 try:

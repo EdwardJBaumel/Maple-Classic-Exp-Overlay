@@ -276,5 +276,21 @@ for good, bad in (({"day": "2026-10-25", "n": 2}, {"day": "2026-10-25", "n": "2"
     check(f"config: reports_sent {good} is kept and {bad} is dropped", kept and "reports_sent" not in m.load_config())
 m.CONFIG_PATH.write_text("{}", encoding="utf-8")
 
+# shadow mode (shadow.py): reader v2's counts and time go in the report once there are any
+fresh()
+log = new_log()
+log.snapshot("0.9.14-beta", "Windows 10.0.26200", [], "screen", "ok")
+log.look("read", ms=20.0)
+check("no shadow part in the body until shadow mode counted something", "shadow" not in log.body("2026-10-25", "0123456789abcdef"))
+for cat, ms in (("agree", 8.0), ("agree", 10.0), ("v2_only", 9.0), ("old_only", 9.0), ("neither", 12.0), ("skipped", None), ("errors", None), ("nonsense", 1.0)):
+    log.look("read", ms=20.0, shadow=(cat, ms))
+body = log.body("2026-10-25", "0123456789abcdef")
+check("shadow counts go in the body by category (an unknown one counts nothing)",
+      body and body["shadow"] == {"agree": 2, "disagree": 0, "v2_only": 1, "old_only": 1, "neither": 1, "skipped": 1, "errors": 1})
+check("v2's average time is the mean of the looks it ran (skipped and error looks have none)", body["ms"]["v2_avg"] == 9.6)
+check("the body still passes the contract check", healthlog.bad_field(body, "2026-10-26") is None)
+log.save()
+check("shadow counts survive a restart", new_log().body("2026-10-25", "0123456789abcdef")["shadow"]["agree"] == 2)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

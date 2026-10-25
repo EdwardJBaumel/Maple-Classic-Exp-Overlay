@@ -1059,5 +1059,146 @@ for f in sorted(FRAMES.glob("exp_*.png")):
     check(f"...also from the colour finder's layout, {size}", m.find_exp(bar) is not None
           and digits_v2.read_layout_v2(font, m.find_exp(bar)) == (68601, 71.68))
 
+# ---- shadow mode: reader v2 runs beside today's reader and only notes whether they agree
+import types  # noqa: E402
+import shadow as shadow_mod  # noqa: E402
+import report  # noqa: E402
+
+
+class FakeTime:
+    """Stands in for the stopwatch: v2's fake reader moves it forward by its cost."""
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def shadow_unit(answer, cost_ms=5.0, finds=True, errors=None):
+    clk = FakeTime()
+    lay = types.SimpleNamespace(gh=10, box=(100, 20, 300, 30), cy=25)
+
+    def read(font, lay):
+        clk.now += cost_ms / 1000
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    return shadow_mod.Shadow(lambda img, hint: lay if finds else None, read, m.fits_exp_table, lambda: {},
+                             lambda img, lay: (img, []), (errors if errors is not None else []).append, timer=clk)
+
+
+img = np.zeros((40, 400, 3), np.uint8)
+LAY = types.SimpleNamespace(gh=10, box=(100, 20, 300, 30), cy=25)
+GOOD, OTHER = (68601, 71.68), (68601, 70.0)
+for old, new, want in ((GOOD, GOOD, "agree"), (GOOD, None, "old_only"), (None, GOOD, "v2_only"), (None, None, "neither"),
+                       ((None, 58.47), (None, 58.47), "agree"), ((None, 58.47), (123456, 58.47), "agree"), ((None, 58.47), (None, 58.4), "disagree")):
+    unit = shadow_unit(new)
+    unit.fits = lambda e, p: True
+    res = unit.look(img, old, 5.0)
+    check(f"shadow: old {old} and v2 {new} is '{want}'", res.category == want and unit.counts[want] == 1)
+unit = shadow_unit(GOOD)
+unit.fits = lambda e, p: True
+res = unit.look(img, OTHER, 5.0, LAY)
+check("shadow: both sure but different is a disagreement, kept with both answers (the crop only)",
+      res.category == "disagree" and list(unit.diffs) == [(OTHER, GOOD)] and len(unit.kept) == 1 and unit.kept[0]["old"] == OTHER)
+for _ in range(5):
+    unit.look(img, OTHER, 5.0, LAY)
+check("shadow: only the last 3 disagreements are kept", len(unit.kept) == 3 and len(unit.diffs) == 3)
+check("shadow: a number that fits no level is not 'sure' (v2 stays unknown)",
+      not m.fits_exp_table(68601, 99.0) and shadow_unit((68601, 99.0)).look(img, None, 5.0).category == "neither")
+
+errs = []
+unit = shadow_unit(ValueError("boom"), errors=errs)
+real_mono = m.time.monotonic
+clock = [5000.0]
+m.time.monotonic = lambda: clock[0]
+try:
+    res = unit.look(img, GOOD, 5.0)
+    check("shadow: v2 raising is counted, reported once, and doesn't escape", res.category == "errors" and unit.counts["errors"] == 1 and len(errs) == 1)
+    check("shadow: ...and v2 is skipped for 60 s (not counted)", unit.look(img, GOOD, 5.0) is None and len(errs) == 1)
+    clock[0] += 61
+    unit.read = lambda font, lay: GOOD
+    check("shadow: ...then it runs again", unit.look(img, GOOD, 5.0).category == "agree")
+
+    unit = shadow_unit(GOOD, cost_ms=6)          # v2 costs 60% of today's reader: every other look
+    cats = [unit.look(img, GOOD, 10.0).category for _ in range(shadow_mod.GUARD_MIN + 10)]
+    tail = cats[shadow_mod.GUARD_MIN + 2:]
+    check("shadow CPU guard: more than half of today's cost runs v2 every other look (the rest counted as skipped)",
+          unit.thinned and not unit.stopped and tail.count("skipped") >= 3 and tail.count("agree") >= 3 and unit.counts["skipped"] > 0)
+    unit = shadow_unit(GOOD, cost_ms=12)         # v2 costs more than today's reader: off for the session
+    cats = [unit.look(img, GOOD, 10.0).category for _ in range(shadow_mod.GUARD_MIN + 10)]
+    check("shadow CPU guard: costing more than today's reader turns v2 off for the session", unit.stopped and cats[-1] == "skipped")
+    unit = shadow_unit(GOOD)
+    unit.on = False
+    check("shadow: shadow_reader false runs nothing and counts nothing", unit.look(img, GOOD, 5.0) is None and not any(unit.counts.values()))
+
+    unit = shadow_unit(None, finds=False)
+    grabs = []
+    more = lambda: (grabs.append(1), (img, 0, 0))[1]
+    unit.look(img, GOOD, 5.0, more=more)
+    unit.look(img, GOOD, 5.0, more=more)
+    clock[0] += 11
+    unit.look(img, GOOD, 5.0, more=more)
+    check("shadow: v2 grabs the bottom strip itself at most once every 10 s, and counts it", len(grabs) == 2 and unit.counts["grabs"] == 2)
+finally:
+    m.time.monotonic = real_mono
+
+# through the real reader (a real bar, a fake screen): the Reading is the same with shadow mode on or off
+before_tess = (m.TESS, m.tesseract_ok)
+m.TESS, m.tesseract_ok = None, False
+
+
+def shadow_reader(on=True):
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, fw, fh)
+    r.shadow.on = on
+    return r
+
+
+def same_input(a, b):
+    """What the tracker is fed: the same fields, whatever shadow mode added."""
+    keep = lambda x: (x.where, x.candidates, x.confident, x.text, x.exp_kind, x.percent_only, x.level, x.note)
+    return keep(a) == keep(b)
+
+
+on, off = shadow_reader(True), shadow_reader(False)
+looks_on = [on.read(fscreen) for _ in range(5)]
+looks_off = [off.read(fscreen) for _ in range(5)]
+check("shadow: the tracker gets exactly the same readings with shadow mode on or off (5 looks, whole bar then remembered crop)",
+      all(same_input(a, b) for a, b in zip(looks_on, looks_off)) and looks_on[0].confident and looks_on[4].confident)
+check("shadow: a clear bar is 'agree' at every look, and nothing is added with the switch off",
+      all(x.shadow and x.shadow[0] == "agree" and x.shadow[1] is not None for x in looks_on) and all(x.shadow is None for x in looks_off))
+check("shadow: reader v2's spot is handed over once, as (window size/digit height, box)",
+      looks_on[0].v2_at and looks_on[0].v2_at[0].startswith(f"{fw}x{fh}/") and all(x.v2_at is None for x in looks_on[1:]) and on.v2_spot)
+x0, y0, x1, y1 = looks_on[0].v2_at[1]
+check("shadow: ...and the box holds the bar", 0 <= x0 < x1 <= fw and 0 <= y0 < y1 <= fh and (x1 - x0) > 100)
+
+fresh = shadow_reader(True)
+fresh.saved_v2 = {looks_on[0].v2_at[0]: looks_on[0].v2_at[1]}
+check("shadow: a spot saved in the config is used as the first hint (and found at once)", fresh.read(fscreen).shadow[0] == "agree")
+
+grey = FakeScreen(cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR))
+g_on, g_off = shadow_reader(True), shadow_reader(False)
+got_on, got_off = g_on.read(grey), g_off.read(grey)
+check("shadow: a greyscale picture today's reader can't find but v2 reads is 'v2_only', and today's Reading is untouched",
+      got_on.shadow and got_on.shadow[0] == "v2_only" and not got_on.confident and same_input(got_on, got_off) and got_on.exp_kind == "not_found")
+
+bad = shadow_reader(True)
+bad.shadow.read = lambda font, lay: 1 / 0
+got = bad.read(fscreen)
+check("shadow: v2 raising leaves today's reading as it was, counted as an error and a failed part",
+      got.confident and got.shadow[0] == "errors" and bad.shadow.counts["errors"] == 1 and bad.part_errors["reader v2"] == 1)
+
+dis = shadow_reader(True)
+dis.shadow.read = lambda font, lay: (1234, 12.34)
+dis.shadow.fits = lambda e, p: True
+got = dis.read(fscreen)
+facts = dis.shadow.facts()
+check("shadow: a disagreement keeps the EXP bar crop and shows up in the bug report",
+      got.shadow[0] == "disagree" and len(dis.shadow.kept) == 1 and dis.shadow.kept[0]["image"].size > 0 and facts["diffs"]
+      and "Disagreed" in "\n".join(report.shadow_lines(facts)) and "1,234 [12.34%]" in "\n".join(report.shadow_lines(facts)))
+check("shadow: the details text has the 'Reader v2 (test)' part", "== Reader v2 (test) ==" in report.details({"shadow": facts}))
+m.TESS, m.tesseract_ok = before_tess
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

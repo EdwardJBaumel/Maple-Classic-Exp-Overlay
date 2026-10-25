@@ -17,6 +17,7 @@ SEND_DAYS = 7               # a finished day older than this is dropped unsent
 SEND_EVERY = 3600           # at most one send attempt per hour (kept across restarts)
 SAVE_EVERY = 300            # the record is written this often (and at exit)
 EXP_KINDS = ("read", "tesseract", "unclear", "not_found", "covered", "no_window")
+SHADOW_KEYS = ("agree", "disagree", "v2_only", "old_only", "neither", "skipped", "errors")     # shadow mode (shadow.py)
 PAIRS = {"level": ("read", "unclear"), "map": ("read", "unread"), "class": ("read", "unread"),
          "mesos": ("read", "unclear"), "potions": ("read", "unclear")}
 MAX_COUNT = 10_000_000
@@ -172,7 +173,7 @@ def _new_day():
     return {"looks": 0, "exp": {k: 0 for k in EXP_KINDS + ("percent_only",)},
             **{name: {k: 0 for k in pair} for name, pair in PAIRS.items()},
             "errors": {}, "tracking": 0.0, "ms_total": 0.0, "ms_n": 0, "hist": {}, "games": {}, "snap": {},
-            "sent": False}
+            "shadow": {k: 0 for k in SHADOW_KEYS}, "v2_ms": 0.0, "v2_n": 0, "sent": False}
 
 
 class HealthLog:
@@ -229,6 +230,10 @@ class HealthLog:
             out["games"] = {str(k): int(num(v)) for k, v in list(rec["games"].items())[:12]}
         if isinstance(rec.get("snap"), dict):
             out["snap"] = rec["snap"]
+        src = rec.get("shadow") if isinstance(rec.get("shadow"), dict) else {}
+        for key in SHADOW_KEYS:
+            out["shadow"][key] = int(num(src.get(key)))
+        out["v2_ms"], out["v2_n"] = float(num(rec.get("v2_ms"))), int(num(rec.get("v2_n")))
         out["sent"] = rec.get("sent") is True
         return out
 
@@ -259,10 +264,10 @@ class HealthLog:
     def today(self):
         return self.days.setdefault(utc_day(self.clock()), _new_day())
 
-    def look(self, kind, percent_only=False, tries=(), ms=None, tracking=0.0, game=None):
+    def look(self, kind, percent_only=False, tries=(), ms=None, tracking=0.0, game=None, shadow=None):
         """Counts one look. `kind`: one of EXP_KINDS. `tries`: (part, worked) pairs for the other readers.
         `ms`: how long the look took. `tracking`: seconds the tracker has been running since the last look.
-        `game`: (w, h, fullscreen, gh) or None."""
+        `game`: (w, h, fullscreen, gh) or None. `shadow`: (what reader v2 did, its milliseconds) or None."""
         rec = self.today()
         if kind not in EXP_KINDS:
             return
@@ -278,6 +283,11 @@ class HealthLog:
             rec["ms_n"] += 1
             b = str(min(MAX_BUCKET, int(ms // BUCKET_MS)))
             rec["hist"][b] = rec["hist"].get(b, 0) + 1
+        if shadow and shadow[0] in SHADOW_KEYS:
+            rec["shadow"][shadow[0]] += 1
+            if shadow[1] is not None and 0 <= shadow[1] < 1e7:
+                rec["v2_ms"] += shadow[1]
+                rec["v2_n"] += 1
         rec["tracking"] += max(0.0, min(MAX_LOOK_GAP, tracking))
         if game:
             w, h, fs, gh = game
@@ -324,6 +334,10 @@ class HealthLog:
         if rec["ms_n"]:
             body["ms"] = {"look_avg": round(min(10000.0, rec["ms_total"] / rec["ms_n"]), 1),
                           "look_p95": round(min(10000.0, self._p95(rec)), 1)}
+            if rec["v2_n"]:
+                body["ms"]["v2_avg"] = round(min(10000.0, rec["v2_ms"] / rec["v2_n"]), 1)
+        if any(rec["shadow"].values()):
+            body["shadow"] = {k: min(MAX_COUNT, rec["shadow"][k]) for k in SHADOW_KEYS}
         return body if bad_field(body, utc_day(self.clock())) is None else None
 
     @staticmethod
