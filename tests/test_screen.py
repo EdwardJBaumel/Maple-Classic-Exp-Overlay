@@ -906,6 +906,47 @@ check("health: a potion bar look that saw nothing is noted as tried and not read
 got = kind_of_look(setup=lambda r: (setattr(r, "_read_potion_bar", lambda *a, **k: ("slot",)), setattr(r, "next_bar", 0.0)))
 check("health: a potion bar look that read something is noted as read", got.tries == (("potions", True),))
 
+# A04 audit: every way out of a look sets exp_kind itself, and the looks add up in the health record
+r = part_reader()
+r._game_rect = lambda: None
+minimized = r.read(fscreen)
+check("health: a minimized game is 'no_window'", minimized.exp_kind == "no_window")
+r = part_reader()
+r.hwnd = None
+real_permission = m.PLATFORM.missing_permission
+m.PLATFORM.missing_permission = lambda: "Allow screen recording for this app."
+no_permission = r.read(fscreen)
+m.PLATFORM.missing_permission = real_permission
+check("health: a missing screen permission is 'no_window'", no_permission.exp_kind == "no_window")
+import healthlog  # noqa: E402
+looks = [kind_of_look(), kind_of_look(templates=False, tesseract=[]), kind_of_look(templates=False, tesseract=[(68601, 71.68)]),
+         minimized, no_permission]
+r = part_reader()
+r.hwnd = None
+looks.append(r.read(fscreen))
+r = m.ScreenReader(m.DigitTemplates.load())
+r.use_region(None)
+looks.append(r.read(fscreen))
+r = part_reader()
+r._game_rect = lambda: (0, 0, fw, fh)
+r.box, r.own_rect = (0, 0, fw, fh), (0, 0, fw, fh)
+looks.append(r.read(fscreen))
+r = part_reader()
+r._game_rect = lambda: (0, 0, fw, fh)
+looks.append(r.read(FakeScreen(np.zeros_like(frame))))
+r = m.ScreenReader(m.DigitTemplates.load())
+for f in sorted(FRAMES.glob("exp_*.png")):
+    looks.append(r._read((percent_only(cv2.imread(str(f))), 0, 0), "game")[0])
+record = healthlog.HealthLog(Path(tempfile.mkdtemp()) / "health.json")
+for look in looks:
+    record.look(look.exp_kind, look.percent_only, look.tries)
+day = record.today()
+check("health: every look from every path names its own kind (none is guessed afterwards)",
+      all(look.exp_kind in healthlog.EXP_KINDS for look in looks))
+check("health: the kinds add up to the looks, and percentage-only looks are read or Tesseract looks",
+      day["looks"] == len(looks) == sum(day["exp"][k] for k in healthlog.EXP_KINDS)
+      and 0 < day["exp"]["percent_only"] <= day["exp"]["read"] + day["exp"]["tesseract"])
+
 m.TESS, m.tesseract_ok = before_tess
 
 rect_f = (0, 0, fw, fh)
