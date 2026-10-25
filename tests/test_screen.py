@@ -1470,6 +1470,36 @@ for i in range(300):
 check("shadow counts: 300 mixed looks are counted exactly once each",
       sum(mix.counts[k] for k in CAT) == 300 == sum(1 for x in results if x is not None)
       and all(x.category == "skipped" or mix.counts[x.category] > 0 for x in results))
+# v2's own small grab (the remembered spot is not inside the picture today's reader holds) is part of v2's time
+lag = 0.02
+slow = full_reader()
+scr = SlowScreen(full, lag)
+slow.read(scr)
+steady = [slow.read(scr) for _ in range(3)]
+check("shadow time: v2's own screen grab is counted in its milliseconds (grab 20 ms, v2 time >= 20)",
+      all(x.shadow and x.shadow[1] >= lag * 1000 * 0.9 for x in steady))
+
+# v2 that is off, paused, stopped or skipping this look grabs nothing
+for how in ("stopped", "paused", "skip"):
+    idle = full_reader()
+    scr = SlowScreen(full)
+    idle.read(scr)
+    if how == "stopped":
+        idle.shadow.stopped = True
+    elif how == "paused":
+        idle.shadow.pause_until = real_time.monotonic() + 100
+    else:
+        idle.shadow._allowed = lambda: False
+    scr.grabbed.clear()
+    got = idle.read(scr)
+    check(f"shadow: v2 {how} makes no screen grab of its own (only today's one)", len(scr.grabbed) == 1)
+off = full_reader(False)
+scr = SlowScreen(full)
+off.read(scr)
+scr.grabbed.clear()
+off.read(scr)
+check("shadow: shadow_reader false makes no screen grab of its own", len(scr.grabbed) == 1 and not any(off.shadow.counts.values()))
+
 m.TESS, m.tesseract_ok = before_tess
 
 # ---- reader v2 on bars drawn from the font itself (exact truth), including ones with a digit lost

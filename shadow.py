@@ -78,11 +78,13 @@ class Shadow:
         return True
 
     # ---- one look
-    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None):
+    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None):
         """Runs v2 on `img` (the picture today's reader just read) and compares. `old`: today's confident
         answer or None. `hint`: a box (x0, y0, x1, y1) in img where v2 saw the bar last time. `more()`: a
         bigger picture as (img, dx, dy) (the bottom strip, dx/dy where it starts relative to img) or None.
         `old_img`: the picture today's reader read, if v2 was given another (for the crop kept in a report).
+        `own()`: v2's own small picture (when `img` doesn't hold the remembered spot) or None; called only once v2
+        really runs, so a look v2 skips (off, paused, stopped, thinned) grabs nothing, and its time counts as v2's.
         Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused)."""
         if not self.on or time.monotonic() < self.pause_until:
             return None
@@ -93,6 +95,10 @@ class Shadow:
         try:
             if self.font is None:
                 self.font = self.load_font()
+            if own is not None:
+                mine = own()
+                if mine is not None:
+                    img, hint = mine, None
             lay, dx, dy = self.find(img, hint), 0, 0
             if lay is None and more is not None and time.monotonic() - self.strip_at >= STRIP_SECONDS:
                 self.strip_at = time.monotonic()
