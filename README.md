@@ -203,7 +203,7 @@ Every version is tested against thousands of misread numbers, and against real s
 **Only download this overlay from this repository's [Releases](https://github.com/beanguri/Maple-Classic-Exp-Overlay/releases).** Other people have copied the code (that's allowed, it's open source), but their copies aren't mine and I haven't checked them. Mine are built by GitHub, and the steps below show how to check that.
 
 - **It only looks at your screen, like a screen recorder.** It never touches the game's files or memory, and never presses keys or clicks for you.
-- **It only goes online for these things:** asking GitHub whether there's a newer version when it starts; sharing your finished 15-minute runs, only if you said yes (see above); the daily health report, only if you said yes; and a bug report, only when you click Send report yourself. Nothing about who you are is sent. Each of the first three can be turned off in ⚙. See [Privacy](#privacy).
+- **It only goes online for these things:** asking GitHub whether there's a newer version when it starts; sharing your finished 15-minute runs, only if you said yes (see above); the daily health report, only if you said yes; and a bug report, only when you click **Send to the developer** yourself. Nothing about who you are is sent. Each of the first three can be turned off in ⚙. See [Privacy](#privacy).
 - **Your antivirus might warn about it.** Antivirus programs sometimes flag small new programs by mistake. All of the code is public right here, so anyone can check what it does.
 - **It isn't made by or affiliated with Nexon.** Like any third-party tool, you use it at your own risk.
 
@@ -245,7 +245,7 @@ Free code signing from [SignPath Foundation](https://signpath.org) is planned, s
 
 - Committers and reviewers: [beanguri](https://github.com/beanguri)
 - Approvers: [beanguri](https://github.com/beanguri)
-- Privacy policy: see [Privacy](#privacy) above. In short: your log and notes stay on your PC, and the overlay only sends anything to another system if you turn on sharing your finished 15-minute runs or the daily health report (both off until you say yes, and you can turn them off any time in Settings), if you click Send report on a bug report, or to check GitHub for a newer version (can be turned off too).
+- Privacy policy: see [Privacy](#privacy) above. In short: your log and notes stay on your PC, and the overlay only sends anything to another system if you turn on sharing your finished 15-minute runs or the daily health report (both off until you say yes, and you can turn them off any time in Settings), if you click **Send to the developer** on a bug report, or to check GitHub for a newer version (can be turned off too).
 
 **Credits:** the list of the game's map names (`assets/maps.txt`) comes from [meowdb.com](https://meowdb.com/msclassic/maps/all), a fan-made MapleStory Classic database (thank you). The typeface is [Manrope](https://github.com/googlefonts/manrope) (SIL Open Font License, included as `assets/fonts/OFL.txt`).
 
