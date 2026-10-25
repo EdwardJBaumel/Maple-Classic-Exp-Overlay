@@ -22,6 +22,7 @@ MIN_SCORE = 0.80            # correlation each digit needs with the digit it was
 MIN_LEAD = 0.025            # ...and how far ahead of the runner-up it must be (clean frames lead by 0.06+)
 MIN_LINE = 0.85             # correlation of the whole drawn line with the real one
 MIN_LABEL = 0.80            # ...and of the label "EXP." before it (it tells if a first digit was lost)
+MIN_OPEN = 0.70             # ...and of the "[" on a bar with only a percentage (nothing else tells if its first digit was lost)
 MAX_EXP_DIGITS = 12
 BLURS = (0.0, 0.7, 1.2)     # extra smoothing (screen pixels) to try, in order, when the exact font doesn't match
 _banks = {}                 # (scale step, x phase, y phase) -> (rows, cols, matrix of the 10 drawn digits)
@@ -161,6 +162,20 @@ def _label_score(font, V, k, tx, ty, blur=0.0):
     return float(_unit(drawn.reshape(-1)) @ _unit(V[y0:y1, x0:x1].reshape(-1)))
 
 
+def _open_score(font, V, k, tx, ty, blur=0.0):
+    """How well the "[" sits where the drawn line puts it. On a bar with only a percentage the digits are placed
+    from the right-hand "]", so a lost first digit ("36.62" read as "6.62") moves the "[" one slot away from
+    where the real one is: this is the only thing that tells."""
+    s = S_STEP ** k
+    pic, _ = exp_font.canvas("[", font)
+    x0, y0 = math.floor(tx - 1.5 * s), math.floor(ty - 1.5 * s)
+    w, h = math.ceil(pic.shape[1] * s + 3 * s) + 1, math.ceil(pic.shape[0] * s + 3 * s) + 1
+    if x0 < 0 or y0 < 0 or y0 + h > V.shape[0] or x0 + w > V.shape[1]:
+        return 0.0
+    drawn = _soften(exp_font.sample(pic, s, tx - x0, ty - y0, (h, w)), blur)
+    return float(_unit(drawn.reshape(-1)) @ _unit(V[y0:y0 + h, x0:x0 + w].reshape(-1)))
+
+
 def _pct_cells(lay):
     """The digits inside the brackets: drops the '%' sign right before the ']' (as maple_exp._pct_cells)."""
     return [c for c in lay.pct if lay.box[2] - c[0] > 1.5 * lay.gh]
@@ -194,12 +209,12 @@ def _read(font, lay, blur, info):
         real = ("{:,}".format(int(exp_s)) + " " if exp_s else "") + "[" + pct_s[:-2] + "." + pct_s[-2:] + "%]"
         if len(real) == len(text):                    # (another digit count would move everything)
             line = _line_score(font, lay.V, real, k, tx, ty, blur)
-        label = _label_score(font, lay.V, k, tx, ty, blur) if n_exp else 1.0
+        label = _label_score(font, lay.V, k, tx, ty, blur) if n_exp else _open_score(font, lay.V, k, tx, ty, blur)
     if info is not None:
         info.clear()
         info.update(digits=digits, best=best, lead=lead, line=line, label=label, blur=blur,
                     scale=S_STEP ** k, tx=tx, ty=ty)
-    if not ok or line < MIN_LINE or label < MIN_LABEL:
+    if not ok or line < MIN_LINE or label < (MIN_LABEL if n_exp else MIN_OPEN):
         return None
     return (int(exp_s) if exp_s else None), int(pct_s) / 100
 

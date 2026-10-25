@@ -1382,5 +1382,94 @@ check("shadow: a disagreement keeps the EXP bar crop and shows up in the bug rep
 check("shadow: the details text has the 'Reader v2 (test)' part", "== Reader v2 (test) ==" in report.details({"shadow": facts}))
 m.TESS, m.tesseract_ok = before_tess
 
+# ---- reader v2 on bars drawn from the font itself (exact truth), including ones with a digit lost
+def font_bar(exp, pct, s, scene_w=None):
+    """"EXP. 12,345 [67.89%]" (or "EXP. [67.89%]" when exp is None) drawn from the font at scale s on a dark background."""
+    text = (f"{exp:,} " if exp is not None else "") + f"[{pct:.2f}%]"
+    cv, _ = exp_font.canvas(text)
+    lab = np.array(font["label"]["rows"], np.float32) / 255
+    h, w = cv.shape
+    H, W = int(h * s + 60), int(w * s + 60 * s)
+    img = np.zeros((H, W), np.float32)
+    tx, ty = 34 * s, H / 2 - 3.5 * s
+    x0, y0, ww, hh = int(tx) - 2, int(ty) - 2, int(w * s) + 6, int(h * s) + 6
+    img[y0:y0 + hh, x0:x0 + ww] = exp_font.sample(cv, s, tx - x0, ty - y0, (hh, ww))
+    left, top = tx + font["label"]["dx"] * s, ty + font["label"]["dy"] * s
+    lx, ly, lw, lh = int(left) - 2, int(top) - 2, int(font["label"]["w"] * s) + 6, int(font["label"]["h"] * s) + 6
+    img[ly:ly + lh, lx:lx + lw] = np.maximum(img[ly:ly + lh, lx:lx + lw], exp_font.sample(lab, s, left - lx, top - ly, (lh, lw)))
+    g = (img * 255).astype(np.uint8)
+    return cv2.merge([g, g, g])
+
+
+def read_v2(img):
+    lay = m.find_exp_v2(img)
+    return digits_v2.read_layout_v2(font, lay) if lay else None
+
+
+for exp, pct, s in ((68601, 71.68, 3.0), (None, 36.62, 7.0), (None, 36.62, 3.0), (None, 36.62, 1.875)):
+    bar = font_bar(exp, pct, s)
+    check(f"a bar drawn from the font reads back exactly, {exp} [{pct}%] at {s}x", read_v2(bar) == (exp, pct))
+# a black strip over the first digit of the percentage must not turn 36.62 into 6.62 (the rest still looks like a clean line)
+lost = []
+bar = font_bar(None, 36.62, 7.0)
+for x in range(0, bar.shape[1] - 30, 6):
+    for wd in (7, 14, 20, 28):
+        cut = bar.copy()
+        cut[:, x:x + wd] = 0
+        got = read_v2(cut)
+        if got not in (None, (None, 36.62)):
+            lost.append((x, wd, got))
+check(f"a %-only bar with a strip over the first percentage digit is never read as another number {lost[:2]}", not lost)
+
+# hostile inputs: v2 gives a result or None, never raises, never a number that isn't the truth (fixed seed)
+fz = np.random.default_rng(5)
+fz_frame = cv2.imread(str(FRAMES / "exp_win-1280x720.png"))
+fz_h, fz_w = fz_frame.shape[:2]
+fz_cases = {"1x1": np.zeros((1, 1, 3), np.uint8), "10x10000": fz.integers(0, 256, (10, 10000, 3), dtype=np.uint8),
+            "20000x10": fz.integers(0, 256, (20000, 10, 3), dtype=np.uint8), "all white": np.full((60, 400, 3), 255, np.uint8),
+            "noise": fz.integers(0, 256, (120, 600, 3), dtype=np.uint8), "mirrored": fz_frame[:, ::-1].copy(),
+            "two bars": np.vstack([fz_frame, fz_frame]), "gray 2-d": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2GRAY),
+            "gray 1 channel": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2GRAY)[:, :, None], "BGRA": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2BGRA),
+            "not contiguous": np.asfortranarray(fz_frame), "a view": np.repeat(fz_frame, 2, axis=1)[:, ::2]}
+for cut in range(0, 40, 3):
+    fz_cases[f"cut left {cut}"], fz_cases[f"cut right {cut}"] = fz_frame[:, cut:], fz_frame[:, :fz_w - cut]
+    fz_cases[f"cut top {cut}"], fz_cases[f"cut bottom {cut}"] = fz_frame[cut:], fz_frame[:fz_h - cut]
+for x in range(0, fz_w, 7):
+    masked = fz_frame.copy()
+    masked[:, x:x + 5] = 0
+    fz_cases[f"strip at {x}"] = masked
+fz_bad, fz_raised = [], []
+for name, pic in fz_cases.items():
+    try:
+        lay = m.find_exp_v2(pic)
+        got = digits_v2.read_layout_v2(font, lay) if lay else None
+    except Exception as e:
+        fz_raised.append((name, repr(e)))
+        continue
+    if got not in (None, (68601, 71.68)):
+        fz_bad.append((name, got))
+for hint in ((-100, -100, 5, 5), (10 ** 9, 10 ** 9, 10 ** 9 + 50, 10 ** 9 + 50), (50, 50, 10, 10), (-1e9, -1e9, 1e9, 1e9), (float("nan"), 0, 10, 10),
+             (0, 0, float("inf"), float("inf")), "garbage", (1, 2, 3), (3.7, 2.2, fz_w - 1.5, fz_h - 0.4)):
+    try:
+        lay = m.find_exp_v2(fz_frame, hint)
+        got = digits_v2.read_layout_v2(font, lay) if lay else None
+    except Exception as e:
+        fz_raised.append((f"hint {hint!r}", repr(e)))
+        continue
+    if got not in (None, (68601, 71.68)):
+        fz_bad.append((f"hint {hint!r}", got))
+check(f"v2 on {len(fz_cases) + 9} hostile pictures and hints: never raises {fz_raised[:3]}", not fz_raised)
+check(f"...and never gives a number that isn't the truth {fz_bad[:3]}", not fz_bad)
+check("...a plain grayscale or BGRA copy of the bar reads like the colour one",
+      all(read_v2(fz_cases[k]) == (68601, 71.68) for k in ("gray 2-d", "gray 1 channel", "BGRA", "not contiguous", "a view")))
+
+# the whole-width search must find the bar whatever the window's width (the blur that tells text from background grows with it)
+wide_bar = cv2.imread(str(FRAMES / "exp_win-1024x768.png"))
+for scale, width in ((1.875, 2560), (1.875, 2500), (1.875, 1920), (2.8125, 3840), (3.75, 5120)):
+    bar = cv2.resize(wide_bar, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+    wide = np.full((317, width, 3), 30, np.uint8)
+    wide[15:15 + bar.shape[0], 12:12 + bar.shape[1]] = bar
+    check(f"a {scale}x bar in a strip {width} px wide is found and read", read_v2(wide) == (68601, 71.68))
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
