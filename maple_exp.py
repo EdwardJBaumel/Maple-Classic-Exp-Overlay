@@ -46,6 +46,7 @@ import mss
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+from capture import ScreenCapture, as_capture, grab  # noqa: F401
 import level_ocr
 import ocr
 import potions
@@ -338,16 +339,7 @@ DEFAULT_HOTKEYS = {"start": "Shift+1", "reset": "Shift+2", "skip": "Shift+3", "c
 
 # --------------------------------------------------------------------------- screenshots
 
-def grab(sct, left, top, width, height):
-    """Screenshot of a screen rectangle, clipped to the monitors: (bgr, left, top) or None."""
-    v = sct.monitors[0]
-    x0, y0 = max(left, v["left"]), max(top, v["top"])
-    x1 = min(left + width, v["left"] + v["width"])
-    y1 = min(top + height, v["top"] + v["height"])
-    if x1 - x0 < 8 or y1 - y0 < 8:
-        return None
-    shot = np.array(sct.grab({"left": x0, "top": y0, "width": x1 - x0, "height": y1 - y0}))
-    return np.ascontiguousarray(shot[:, :, :3]), x0, y0
+# (grab() and the Capture classes live in capture.py: where the pictures come from)
 
 
 # --------------------------------------------------------------------------- reading the bar
@@ -1357,6 +1349,7 @@ class ScreenReader:
         self.mesos_fails = 0
         self.next_mesos_check = 0.0
         self.mesos_covered = False  # this app's window is in the way of the mesos
+        self.capture = ScreenCapture(None)  # where the pictures come from (set at each look)
         self.two_boxes = False      # a storage / trade window shows a second mesos box
         self.window = None          # "shop", "storage" or "trade" while one is open (or just closed)
         self.window_until = 0.0     # ...and until when it still counts
@@ -1410,14 +1403,22 @@ class ScreenReader:
         self.next_level_read, self._level_candidate = 0.0, None
         self.request_map()
 
-    def read(self, sct):
+    def read(self, capture):
+        capture = self.capture = as_capture(capture)
+        capture.begin_look()
+        try:
+            return self._look(capture)
+        finally:
+            capture.end_look()
+
+    def _look(self, capture):
         if self.look_again_requested:
             self.look_again_requested = False
             self._forget_places()
         rect = self._game_rect()
         self.last_rect = rect
         if self.mode == "region":
-            reading = self._read_region(sct, rect)
+            reading = self._read_region(capture, rect)
         elif not self.hwnd and PLATFORM.missing_permission():
             return Reading(PLATFORM.missing_permission())
         elif not self.hwnd:
@@ -1425,19 +1426,19 @@ class ScreenReader:
         elif not rect:
             return Reading("MapleStory is minimized. Bring the game back up.")
         else:
-            reading = self._read_window(sct, rect)
+            reading = self._read_window(capture, rect)
         if reading.percent_only and self.mode == "region":
             # (a selected area has no game window around it: no badge to find, so typing the level in is open at once)
             self.level_failures = max(self.level_failures, LEVEL_FAILS_FOR_FALLBACK)
             self.level_look = {"image": None, "votes": {}, "why": "Selected area: the level badge isn't in it"}
         if rect and self.gh:
-            name, note = self._read_info(sct, rect)
-            reading = self._read_extras(sct, rect, reading._replace(map=name, note=note))
+            name, note = self._read_info(capture, rect)
+            reading = self._read_extras(capture, rect, reading._replace(map=name, note=note))
             if self.exp_anchor and self.mode == "window":
-                self._read_job(sct, rect)
-                self._look_at_name(sct, rect)
+                self._read_job(capture, rect)
+                self._look_at_name(capture, rect)
                 if reading.percent_only:        # no EXP number to tell the level from: the badge has to
-                    self._read_level(sct, rect)
+                    self._read_level(capture, rect)
         return reading._replace(level=(self.level, "badge") if self.level and reading.percent_only and self.mode == "window" else None)
 
     def map_blind_seconds(self):
@@ -1463,14 +1464,15 @@ class ScreenReader:
                 ax, ay = self.exp_anchor
                 if self._covered(wx + int(ax - 65 * g), wy + int(ay - 3 * g), int(46 * g), int(6.5 * g)):
                     covering.append("class name")
-        return dict(mode=self.mode, found=bool(self.hwnd), rect=rect, gh=g, region=self.region,
+        return dict(mode=self.mode, found=bool(self.hwnd), rect=rect, gh=g, region=self.region, capture=self.capture.name,
                     own_rect=self.own_rect, covering=covering, exp_box=self.box, exp_misses=self.misses,
                     map_box=self.map_box, map_unread=self.map_unread, mesos_box=self.mesos_box,
                     mesos_fails=self.mesos_fails, two_boxes=self.two_boxes, mesos_learned=self.mesos_digits.complete,
                     party_area=self.party_area, job_why=(self.job_look or {}).get("why") or "")
 
-    def _read_job(self, sct, rect):
+    def _read_job(self, capture, rect):
         """Reads the class from the status bar now and then (it only changes at a job advance)."""
+        capture = self.capture = as_capture(capture)
         now = time.monotonic()
         if not tesseract_ok or now < self.next_job_read:
             return
@@ -1478,11 +1480,11 @@ class ScreenReader:
         ax, ay = self.exp_anchor
         g = self.gh
         x0, y0, w, h = wx + int(ax - 65 * g), wy + int(ay - 3 * g), int(46 * g), int(6.5 * g)
-        if self._covered(x0, y0, w, h):
+        if self._blocked(x0, y0, w, h):
             self.next_job_read = now + 5
             self.job_look = {"image": None, "boxes": [], "why": "this window is covering the class name: move it"}
             return
-        shot = grab(sct, x0, y0, w, h)
+        shot = capture.grab(x0, y0, w, h)
         look = {}
         job = read_job(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, look) if shot else None
         self.job_look = look or None
@@ -1490,9 +1492,10 @@ class ScreenReader:
             self.job = job
         self.next_job_read = now + (60 if job else 10)
 
-    def _look_at_name(self, sct, rect):
+    def _look_at_name(self, capture, rect):
         """Now and then, a print of the name row: how another character is told from this one (the level
         read for one isn't another's). It is only a picture, kept in memory: the name isn't read."""
+        capture = self.capture = as_capture(capture)
         now = time.monotonic()
         if now < self.next_name_read:
             return
@@ -1501,10 +1504,10 @@ class ScreenReader:
         ax, ay = self.exp_anchor
         g = self.gh
         x0, y0, w, h = wx + int(ax - 50.5 * g) - 2, wy + int(ay + 0.9 * g) - 2, int(12.5 * g) + 5, int(1.7 * g) + 5
-        if self._covered(x0, y0, w, h):
+        if self._blocked(x0, y0, w, h):
             self.name_print = None
             return
-        shot = grab(sct, x0, y0, w, h)
+        shot = capture.grab(x0, y0, w, h)
         self.name_print = level_ocr.name_print(shot[0], wx + ax - shot[1], wy + ay - shot[2], g) if shot else None
 
     def recheck_level(self):
@@ -1512,10 +1515,11 @@ class ScreenReader:
         far stays until a new one has been seen twice."""
         self.next_level_read, self._level_candidate = 0.0, None
 
-    def _read_level(self, sct, rect):
+    def _read_level(self, capture, rect):
         """Reads the level from the badge: a level counts once two looks in a row agree. A failing read
         backs off (so a covered or unreadable badge doesn't keep starting Tesseract); a known level is
         looked at again only now and then."""
+        capture = self.capture = as_capture(capture)
         now = time.monotonic()
         if now < self.next_level_read:
             return
@@ -1528,11 +1532,11 @@ class ScreenReader:
             self.level_look = {"image": None, "votes": {}, "why": "Tesseract isn't available"}
             self.next_level_read = now + 60
             return
-        if self._covered(x0, y0, w, h):
+        if self._blocked(x0, y0, w, h):
             self.level_look = {"image": None, "votes": {}, "why": "this window is covering the level badge: move it"}
             self.next_level_read = now + 5
             return
-        shot = grab(sct, x0, y0, w, h)
+        shot = capture.grab(x0, y0, w, h)
         look = {}
         try:
             seen = level_ocr.read_level(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, TESS, look) if shot else None
@@ -1566,10 +1570,11 @@ class ScreenReader:
                 self.mesos_box = tuple(saved[2:])           # where it was last time
         return rect
 
-    def _hide_own(self, shot):
-        """The screenshot with this app's window blacked out, so it can never read itself."""
+    def _hide_own(self, shot, screen_copy=False):
+        """The screenshot with this app's window blacked out, so it can never read itself. (A capture that
+        sees through windows has nothing to hide; screen_copy=True is for a picture taken from the screen.)"""
         r = self.own_rect
-        if not shot or not r:
+        if not shot or not r or (self.capture.sees_through_windows and not screen_copy):
             return shot
         img, sx, sy = shot
         x0, y0 = max(0, r[0] - sx), max(0, r[1] - sy)
@@ -1585,30 +1590,37 @@ class ScreenReader:
         return bool(r) and (x - margin < r[0] + r[2] and r[0] < x + w + margin
                             and y - margin < r[1] + r[3] and r[1] < y + h + margin)
 
+    def _blocked(self, x, y, w, h, margin=0):
+        """Is this area unreadable because this app's window is on top of it? (Never, if the capture sees
+        through windows; _covered is the plain geometry.)"""
+        return self._covered(x, y, w, h, margin) and not self.capture.sees_through_windows
+
     def _remember(self, lay, rect, shot=None):
         if lay and rect:
             self.gh = lay.gh                # tells the minimap reader how big the UI is
             if shot:                        # where the EXP number starts: the class is left of it
                 self.exp_anchor = (shot[1] - rect[0] + lay.box[0], shot[2] - rect[1] + lay.cy)
 
-    def _read_region(self, sct, rect):
+    def _read_region(self, capture, rect):
+        capture = self.capture = as_capture(capture)
         r = self.region
         if not r:
             return Reading("No area selected. Click Select area.")
-        shot = self._hide_own(grab(sct, r["left"], r["top"], r["width"], r["height"]))
+        shot = self._hide_own(capture.grab(r["left"], r["top"], r["width"], r["height"]))
         reading, lay = self._read(shot, "Selected area")
         if reading.confident:
             self._remember(lay, rect)
         return reading
 
-    def _read_window(self, sct, rect):
+    def _read_window(self, capture, rect):
+        capture = self.capture = as_capture(capture)
         wx, wy, ww, wh = rect
         where = f"MapleStory window {ww}x{wh}"
         if self.box:
             bx, by, bw, bh = self.box
-            if self._covered(wx + bx, wy + by, bw, bh):
+            if self._blocked(wx + bx, wy + by, bw, bh):
                 return Reading("This window is covering the EXP bar. Move it.")
-            shot = grab(sct, wx + bx, wy + by, bw, bh)
+            shot = capture.grab(wx + bx, wy + by, bw, bh)
             reading, lay = self._read(shot, where)
             if reading.confident:
                 self.misses = 0
@@ -1623,14 +1635,14 @@ class ScreenReader:
 
         # Search the bottom of the window (and now and then the whole window).
         top = int(wh * (1 - SEARCH_STRIP))
-        shot = self._hide_own(grab(sct, wx, wy + top, ww, wh - top))
+        shot = self._hide_own(capture.grab(wx, wy + top, ww, wh - top))
         lay = find_exp(shot[0]) if shot else None
         if not lay and time.monotonic() - self.last_full_search > 10:
             self.last_full_search = time.monotonic()
-            shot = self._hide_own(grab(sct, wx, wy, ww, wh))
+            shot = self._hide_own(capture.grab(wx, wy, ww, wh))
             lay = find_exp(shot[0]) if shot else None
         if not lay:
-            if self._covered(wx, wy + top, ww, wh - top):
+            if self._blocked(wx, wy + top, ww, wh - top):
                 return Reading("Can't find the EXP bar. Is this window covering it?")
             return Reading("Can't find the EXP bar at the bottom of the game. Is something covering it?")
         img, sx, sy = shot
@@ -1674,8 +1686,9 @@ class ScreenReader:
         return Reading(_problem(where, "Found the EXP bar, but can't read its numbers clearly."),
                        image=view, boxes=boxes), lay
 
-    def _read_extras(self, sct, rect, reading):
+    def _read_extras(self, capture, rect, reading):
         """Adds the mesos count and, every few seconds, the party size to a reading."""
+        capture = self.capture = as_capture(capture)
         wx, wy, ww, wh = rect
         now, g = time.monotonic(), self.gh
         notes = [reading.note] if reading.note else []
@@ -1687,7 +1700,7 @@ class ScreenReader:
                 self.mesos_fails, self.next_outline = 0, 0.0
         if now >= self.next_scan:                     # look over the whole window
             self.next_scan = now + (SCAN_SECONDS if self.mesos_box else 2)
-            shot = self._hide_own(grab(sct, wx, wy, ww, wh))
+            shot = self._hide_own(capture.grab(wx, wy, ww, wh))
             if shot:
                 img, sx, sy = shot
                 hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)      # (made once for everything below)
@@ -1737,7 +1750,7 @@ class ScreenReader:
                             moved = (ww, wh) + box
                     self.window_box = bool(window)
                 area = self.party_area
-                if area and self._covered(*area):
+                if area and self._blocked(*area):
                     notes.append("This window is covering the party list.")
                 else:
                     bars = find_party_bars(img, g, hsv)
@@ -1754,21 +1767,22 @@ class ScreenReader:
         if self.mesos_box:
             bx, by, bw, bh = self.mesos_box
             # (the digits only need the box and a sliver around it to be seen)
-            if self._covered(wx + bx, wy + by, bw, bh, margin=max(2, int(0.3 * bh))):
+            if self._blocked(wx + bx, wy + by, bw, bh, margin=max(2, int(0.3 * bh))):
                 notes.append("This window is covering the inventory's mesos.")
                 self.mesos_covered = True
             else:
-                mesos, image, boxes = self._read_mesos(sct, wx + bx, wy + by, bw, bh)
+                mesos, image, boxes = self._read_mesos(capture, wx + bx, wy + by, bw, bh)
         window = self.window if now <= self.window_until else None
         if window:
             notes.append(f"{WINDOW_NAMES[window]} window open.")
-        bar = self._read_potion_bar(sct, rect, notes) if now >= self.next_bar else None
+        bar = self._read_potion_bar(capture, rect, notes) if now >= self.next_bar else None
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
                                 mesos_at=moved, window=window, bar=bar, note=" ".join(notes) or None)
 
-    def _read_potion_bar(self, sct, rect, notes):
+    def _read_potion_bar(self, capture, rect, notes):
         """The potions and food on the potion bar as a tuple of potions.Slot (empty: none, or it
         can't be seen), or None when there is nothing to report. Read every few seconds."""
+        capture = self.capture = as_capture(capture)
         self.next_bar = time.monotonic() + POTION_SECONDS
         wx, wy, ww, wh = rect
         if self.potion_table is None:
@@ -1780,10 +1794,10 @@ class ScreenReader:
                 self.next_bar = float("inf")                    # without it there's nothing to read
                 return None
         bx, by, bw, bh = potions.bar_crop_box(ww, wh)
-        if self._covered(wx + bx, wy + by, bw, bh):
+        if self._blocked(wx + bx, wy + by, bw, bh):
             notes.append("This window is covering the potion bar.")
             return ()
-        shot = grab(sct, wx + bx, wy + by, bw, bh)
+        shot = capture.grab(wx + bx, wy + by, bw, bh)
         if not shot:
             return ()
         img, sx, sy = shot
@@ -1816,9 +1830,10 @@ class ScreenReader:
             return None
         return field if read_mesos_positions(img, field, templates) else None
 
-    def _read_mesos(self, sct, x, y, w, h):
+    def _read_mesos(self, capture, x, y, w, h):
         """Reads the mesos box at (x, y, w, h) on screen. Returns (number, image, boxes)."""
-        shot = grab(sct, x - 2 * h, y - h, w + 4 * h, 3 * h)
+        capture = self.capture = as_capture(capture)
+        shot = capture.grab(x - 2 * h, y - h, w + 4 * h, 3 * h)
         if not shot:
             return None, None, ()
         img, sx, sy = shot
@@ -1873,8 +1888,9 @@ class ScreenReader:
             learned.learn(lay, checked)
         return checked, img, boxes
 
-    def _read_info(self, sct, rect):
+    def _read_info(self, capture, rect):
         """Returns (map name if it was just read, note)."""
+        capture = self.capture = as_capture(capture)
         if not tesseract_ok:
             return None, "Map names can't be read: Tesseract OCR is missing (see the README)."
         if self.own_rect is None:
@@ -1886,26 +1902,26 @@ class ScreenReader:
         hidden = self.map_blind_seconds() > MAP_HIDDEN_SECONDS
         if self.map_box is None and now >= self.next_map_search:
             self.next_map_search = now + (1 if hidden else 3)     # looks harder for a name that has gone missing
-            shot = self._hide_own(grab(sct, wx, wy, int(ww * 0.4), int(wh * 0.3)))
+            shot = self._hide_own(capture.grab(wx, wy, int(ww * 0.4), int(wh * 0.3)))
             box = find_map_box(shot[0], g) if shot else None
             if box:
                 self.map_box = (shot[1] - wx + box[0], shot[2] - wy + box[1], box[2], box[3])
                 self.map_print, self.map_unread = None, True
         if self.map_box is None:
-            if self._covered(wx, wy, int(ww * 0.4), int(wh * 0.3)):
+            if self._blocked(wx, wy, int(ww * 0.4), int(wh * 0.3)):
                 note = "This window may be covering the minimap. Move it so the map name can be read."
             else:
                 note = "Can't see the map name. Is the minimap open?"
         else:
             bx, by, bw, bh = self.map_box
-            if self._covered(wx + bx, wy + by, bw, bh, margin=max(3, int(0.1 * g))):
+            if self._blocked(wx + bx, wy + by, bw, bh, margin=max(3, int(0.1 * g))):
                 # Even a box that only touches this window may be cut off by it (it was
                 # found with this window blacked out). Find the whole box again (and read
                 # the name) once this window is out of the way.
                 note = "This window is covering the minimap. Move it so the map name can be read."
                 self.map_box, self.map_unread = None, True
             else:
-                shot = grab(sct, wx + bx, wy + by, bw, bh)
+                shot = capture.grab(wx + bx, wy + by, bw, bh)
                 if shot:
                     self.map_seen_at = now
                     picture = cv2.resize(_whiteness(shot[0]), (64, 16), interpolation=cv2.INTER_AREA) > 0.3
@@ -4491,10 +4507,11 @@ class App:
     # ---- background capture loop
     def _worker(self):
         with mss.mss() as sct:
+            capture = ScreenCapture(sct)
             while not self.stop_evt.is_set():
                 t0 = time.monotonic()
                 try:
-                    self.q.put(("reading", self.reader.read(sct)))
+                    self.q.put(("reading", self.reader.read(capture)))
                     self.health.finished(t0)
                 except Exception as e:
                     log_error("reading the screen", e)
@@ -5432,7 +5449,8 @@ class App:
             return None
         try:
             with mss.mss() as sct:
-                shot = self.reader._hide_own(grab(sct, *rect))
+                # (always a screen copy, whatever the reader uses: it shows what is on screen, this window hidden)
+                shot = self.reader._hide_own(grab(sct, *rect), screen_copy=True)
             if not shot:
                 return None
             img = Image.fromarray(cv2.cvtColor(shot[0], cv2.COLOR_BGR2RGB))
