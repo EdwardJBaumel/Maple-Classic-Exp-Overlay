@@ -705,6 +705,19 @@ setInterval(refreshNews, 30000);
 document.addEventListener("visibilitychange", refreshNews);   // back on the tab: catch up
 refreshNews();
 
+// "Coming next": shown unless the visitor closed this exact list (saved in their browser; a changed list shows again).
+{
+  const box = $("next");
+  const key = "next:" + [...box.querySelectorAll("li")].map((li) => li.textContent.trim()).join("|");
+  let closed = false;
+  try { closed = localStorage.getItem("nextClosed") === key; } catch {}
+  box.hidden = closed;
+  $("next-x").addEventListener("click", () => {
+    box.hidden = true;
+    try { localStorage.setItem("nextClosed", key); } catch {}
+  });
+}
+
 // The hero: the headline rises into place line by line, the rest fades up.
 if (motion()) {
   const clear = "transform,opacity,visibility";
