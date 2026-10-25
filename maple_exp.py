@@ -2103,7 +2103,15 @@ class ScreenReader:
 
     def _shadow_look(self, capture, rect, shot, reading, lay, started):
         """Runs reader v2 on the picture just read and notes in the Reading how the two compare (shadow.py).
-        It only adds to the Reading's shadow and v2_at, never changes what was read."""
+        It only adds to the Reading's shadow and v2_at, never changes what was read: anything going wrong here
+        leaves the Reading exactly as it was."""
+        try:
+            return self._shadow_look_v2(capture, rect, shot, reading, lay, started)
+        except Exception as e:
+            self._part_failed("reader v2", e)
+            return reading
+
+    def _shadow_look_v2(self, capture, rect, shot, reading, lay, started):
         if not shot or not self.shadow.on:
             return reading
         wx, wy, ww, wh = rect

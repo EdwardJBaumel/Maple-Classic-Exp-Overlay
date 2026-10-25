@@ -1189,6 +1189,12 @@ got = bad.read(fscreen)
 check("shadow: v2 raising leaves today's reading as it was, counted as an error and a failed part",
       got.confident and got.shadow[0] == "errors" and bad.shadow.counts["errors"] == 1 and bad.part_errors["reader v2"] == 1)
 
+glue, plain = shadow_reader(True), shadow_reader(False)
+glue.shadow.look = lambda *a, **k: 1 / 0               # (a failure in the code around v2, outside its own guard)
+got, want = glue.read(fscreen), plain.read(fscreen)
+check("shadow: a failure around v2 leaves today's reading exactly as it was, counted as a failed part",
+      got.confident and same_input(got, want) and got.shadow is None and glue.part_errors["reader v2"] == 1)
+
 dis = shadow_reader(True)
 dis.shadow.read = lambda font, lay: (1234, 12.34)
 dis.shadow.fits = lambda e, p: True
