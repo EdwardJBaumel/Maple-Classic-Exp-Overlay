@@ -218,8 +218,8 @@ check("a party size from the overlay's link means a party",
 check("party runs aren't in solo", "Cold Field I" not in maps)
 check("a party of 7 is refused", call("/api/stats?class=Thief&level=32&party=7").get("status") == 400)
 check(f"around your level starts at 3 levels either way, and says how wide it can go ({s['levels']}, {s['ranges']})",
-      s["levels"] == [29, 35] and s["ranges"] == [3, 5, 8])
-check("runs more than 8 levels away are left out", call("/api/stats?class=Thief&path=Shadower&level=43&party=solo")["maps"] == [])
+      s["levels"] == [29, 35] and s["ranges"] == [3, 5])
+check("runs more than 5 levels away are left out", call("/api/stats?class=Thief&path=Shadower&level=43&party=solo")["maps"] == [])
 check("level is required", call("/api/stats?class=Thief&path=Shadower").get("status") == 400)
 check("an old-style job name isn't a class", call("/api/stats?class=Bandit&level=32&party=1").get("status") == 400)
 check("a path from another class is refused", call("/api/stats?class=Thief&path=Bishop&level=32").get("status") == 400)
@@ -276,13 +276,16 @@ def players_on(map_name, levels, exp_hr=40000, job="Bandit", party=1, day_n=2):
 
 
 players_on("Rocky Road II", [50, 50, 51], 52000)                       # a busy level: 3 players within 3 levels
-players_on("Sleepy Dungeon IV", [47, 52, 56], 61000)                   # a quiet one: needs the widest range
+players_on("Sleepy Dungeon IV", [46, 52, 55], 61000)                   # a quiet one: needs the widest range
+players_on("Sleepy Dungeon V", [44, 56, 58], 61000)                    # nobody within 5 levels
 a = call("/api/stats?class=Thief&path=Shadower&level=50&party=solo")
 byname = {m["map"]: m for m in a["maps"]}
+check("a map with players only 6 or more levels away isn't shown, not even as early data",
+      "Sleepy Dungeon V" not in byname and all(m["map"] != "Sleepy Dungeon V" for m in a["early"]))
 check(f"a busy level stays narrow ({byname.get('Rocky Road II', {}).get('levels')})",
       byname.get("Rocky Road II", {}).get("levels") == [47, 53] and not byname["Rocky Road II"]["widened"])
 check(f"a quiet level widens until the map has enough players ({byname.get('Sleepy Dungeon IV', {}).get('levels')})",
-      byname.get("Sleepy Dungeon IV", {}).get("levels") == [42, 58] and byname["Sleepy Dungeon IV"]["widened"]
+      byname.get("Sleepy Dungeon IV", {}).get("levels") == [45, 55] and byname["Sleepy Dungeon IV"]["widened"]
       and byname["Sleepy Dungeon IV"]["players"] == 3)
 m = byname["Rocky Road II"]
 check(f"each map has % of a level per hour and hours per level ({m['pct_hr']}%/hr, {m['hours_per_level']} h)",
@@ -293,10 +296,14 @@ check("...and EXP/hr by level, for the detail panel", len(m["by_level"]) >= 2 an
 players_on("Rocky Road II", [50, 51, 49], 36000, party=3, day_n=3)    # the same map in a party
 b = call("/api/stats?class=Thief&path=Shadower&level=50&party=solo&x=1")
 m = {x["map"]: x for x in b["maps"]}["Rocky Road II"]
-check(f"solo numbers show what a party gets there ({m['other']})",
-      m["other"] and m["other"]["solo"] is False and m["other"]["players"] == 3 and 30000 < m["other"]["exp_hr"] < 42000)
-check("...and the recent trend is there or empty, never made up",
-      m["trend"] is None or set(m["trend"]) == {"recent", "before"})
+sizes = {p["party"]: p for p in m["by_party"]}
+check(f"EXP/hr by party size: solo and the party of 3, nothing made up for other sizes ({m['by_party']})",
+      list(sizes) == [1, 3] and all(set(p) == {"party", "players", "exp_hr"} for p in m["by_party"])
+      and sizes[1]["players"] == 3 and 49000 < sizes[1]["exp_hr"] < 55000
+      and sizes[3]["players"] == 3 and 30000 < sizes[3]["exp_hr"] < 42000)
+p3 = {x["map"]: x for x in call("/api/stats?class=Thief&path=Shadower&level=50&party=party")["maps"]}.get("Rocky Road II")
+check("...the same from the party side", p3 is not None and [p["party"] for p in p3["by_party"]] == [1, 3])
+check("...and no trend or solo-vs-party block any more", "trend" not in m and "other" not in m)
 check("the answer says when the newest run was shared", bool(a["newest_run"]) and a["newest_run"].endswith("Z"))
 check("no install ids anywhere in the answer", "install" not in json.dumps(a))
 

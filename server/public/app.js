@@ -54,7 +54,8 @@ function fromLink(q = new URLSearchParams(location.search)) {
   const asked = q.get("path");
   if (out.job && asked && classes.find((c) => c.name === out.job)?.paths.some((p) => p.name === asked)) out.path = asked;
   if (SORTS[q.get("sort")]) out.sort = q.get("sort");
-  if (q.get("hide") === "early") out.hide = true;
+  if (q.get("hide") === "early") out.showEarly = false;      // (links from when early data showed by default)
+  if (q.get("early") === "1") out.showEarly = true;
   if (q.get("view") === "ladder") out.view = "ladder";
   if (q.get("new") === "1") out.withNew = true;
   return out;
@@ -118,7 +119,7 @@ async function loadOptions() {
   const link = fromLink(), linked = Object.keys(link).length > 0;
   const last = { ...saved(), ...link };
   if (SORTS[last.sort]) view.sort = last.sort;
-  view.hideEarly = !!last.hide;
+  view.hideEarly = !last.showEarly;          // (the old "hide" setting is ignored: hidden is the new default)
   view.withNew = !!last.withNew;
   view.tab = link.view === "ladder" ? "ladder" : "maps";
   setTabs();
@@ -142,10 +143,11 @@ async function loadOptions() {
 // the tab never asks the server again, and asking the same thing twice within 15 minutes doesn't either).
 const SORTS = {
   exp: ["EXP/hr", (m) => m.exp_hr, "Best pick"],
-  pct: ["% of a level per hour", (m) => m.pct_hr ?? 0, "Fastest levelling"],
   mesos: ["Mesos/hr", (m) => m.mesos_hr ?? -1, "Most mesos"],
 };
-const view = { sort: "exp", hideEarly: false, withNew: false, tab: "maps" };
+const TOP = 5;                               // maps shown before "Show more" (all of them come in one answer)
+// (early data is hidden unless the visitor shows it; showAll lasts until the next question)
+const view = { sort: "exp", hideEarly: true, showAll: false, withNew: false, tab: "maps" };
 const NEW_TIP = "Players who joined lately. They count for everyone after a day and 4 runs.";
 const newBox = () => `<label class="chk" title="${NEW_TIP}"><input type="checkbox" id="with-new"${view.withNew ? " checked" : ""}> Include new players</label>`;
 /** Ticking "Include new players" asks again (it's in the chart's toolbar, the ladder's, and the empty answers). */
@@ -166,13 +168,6 @@ async function getJson(url) {
   return data;
 }
 
-/** The time a % per hour rate takes to fill a level: "45 min", "2.5 h", "14 h". */
-function perLevel(h) {
-  if (h === null || h === undefined) return "";
-  if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
-  return h < 10 ? `${h.toFixed(1).replace(/\.0$/, "")} h` : `${Math.round(h).toLocaleString("en-US")} h`;
-}
-
 /** The address follows what's chosen, so any view can be shared or bookmarked. */
 function syncUrl() {
   const c = chosenClass();
@@ -180,7 +175,7 @@ function syncUrl() {
   const q = new URLSearchParams({ level: $("level").value, party: $("party").value, job: c.name });
   if (!firstJob() && $("path").value) q.set("path", $("path").value);
   if (view.sort !== "exp") q.set("sort", view.sort);
-  if (view.hideEarly) q.set("hide", "early");
+  if (!view.hideEarly) q.set("early", "1");
   if (view.withNew) q.set("new", "1");
   if (view.tab === "ladder") q.set("view", "ladder");
   try { history.replaceState(null, "", `${location.pathname}?${q}`); } catch {}
@@ -202,7 +197,7 @@ async function ask(event, scroll = !!event) {
   fillPaths();
   const job = c.name, path = level < SECOND_JOB ? null : $("path").value;
   try {
-    localStorage.setItem("ask", JSON.stringify({ job, path: path || wantPath, level, party, sort: view.sort, hide: view.hideEarly, withNew: view.withNew }));
+    localStorage.setItem("ask", JSON.stringify({ job, path: path || wantPath, level, party, sort: view.sort, showEarly: !view.hideEarly, withNew: view.withNew }));
   } catch {}
   syncUrl();
   if (view.tab === "ladder") return showLadder(job, path, level, party, scroll);
@@ -233,6 +228,7 @@ async function ask(event, scroll = !!event) {
     hookNew();
     return;
   }
+  view.showAll = false;
   showChart(true);
 }
 
@@ -291,8 +287,6 @@ function rowHtml(m, i, s, early, need, rank = i + 1) {
   const levels = m.levels ? `Lv ${Number(m.levels[0])}–${Number(m.levels[1])}` : "";
   const widened = m.widened ? `<span class="chip widen" title="Not enough players at your level, so this map uses players from a wider range of levels">wider range</span>` : "";
   const fresh = m.new_players ? `<span class="chip fresh" title="${plural(m.new_players, "player")} here joined lately and don't count for everyone yet (a day and 4 runs)">includes ${plural(m.new_players, "new player")}</span>` : "";
-  const pace = m.pct_hr === null || m.pct_hr === undefined ? ""
-    : `<div class="pace" title="${Number(m.pct_hr)}% of a level per hour">≈ ${esc(perLevel(m.hours_per_level))} per level</div>`;
   const id = `${early ? "e" : "m"}${i}`;
   return `<div class="row${best ? " best" : ""}${early ? " early" : ""}" data-at="${id}">
     <div class="rank">${early ? "" : rank}</div>
@@ -304,19 +298,20 @@ function rowHtml(m, i, s, early, need, rank = i + 1) {
     <div class="track" aria-hidden="true"><i class="base"></i>${s.ticks.map((t) => `<i class="grid" style="left:${x(t)}%"></i>`).join("")}
       ${band}<b class="med" style="left:${mid}%"></b>${marks}</div>
     <div class="nums"><div class="exp"><span data-n="${Number(m.exp_hr)}">${fmt(m.exp_hr)}</span><small>EXP/hr</small></div>
-      <div class="mesos">${m.mesos_hr === null ? "mesos/hr not known" : `${fmt(m.mesos_hr)} mesos/hr`}</div>${pace}</div>
+      <div class="mesos">${m.mesos_hr === null ? "mesos/hr not known" : `${fmt(m.mesos_hr)} mesos/hr`}</div></div>
     <span class="sr-only">Typical ${fmt(m.exp_hr)} EXP/hr${m.players > 1 ? `; half of players get ${fmt(m.exp_hr_low)} to ${fmt(m.exp_hr_high)}` : ""}.</span>
   </div>`;
 }
 
-/** The panel under a map: solo vs party, EXP/hr by level, and the last week against before. */
+/** The panel under a map: EXP/hr by party size (solo, 2 to 6) and by level. */
 function detailHtml(m, id) {
-  const now = current.party === "solo" ? "Solo" : "In a party", other = current.party === "solo" ? "In a party" : "Solo";
-  const o = m.other;
-  const compare = `<div class="d-card"><h4>Solo or party</h4><div class="d-pair">
-      <div><b>${fmt(m.exp_hr)}</b><span>${now} · ${plural(m.players, "player")}</span></div>
-      <div>${o ? `<b>${fmt(o.exp_hr)}</b><span>${other} · ${plural(o.players, "player")}</span>`
-        : `<b>–</b><span>${other}: no runs yet</span>`}</div></div></div>`;
+  const sizes = m.by_party || [];          // (sizes nobody farmed here aren't in it)
+  const top = Math.max(1, ...sizes.map((b) => b.exp_hr));
+  const mine = (n) => current.party === "solo" ? n === 1 : n >= 2;
+  const party = `<div class="d-card"><h4>EXP/hr by party size</h4>${sizes.length ? `<div class="pt-rows">${sizes.map((b) =>
+    `<div class="pt${mine(b.party) ? " me" : ""}"><span>${b.party === 1 ? "Solo" : `Party of ${Number(b.party)}`}<small>${plural(b.players, "player")}</small></span>
+      <i aria-hidden="true"><i style="width:${Math.max(4, b.exp_hr / top * 100).toFixed(0)}%"></i></i><b>${fmt(b.exp_hr)}</b></div>`).join("")}</div>`
+    : `<p class="d-none">No runs by party size yet.</p>`}</div>`;
   const tall = Math.max(1, ...m.by_level.map((b) => b.exp_hr));
   const bars = m.by_level.map((b) => `<div class="lvb${b.level === current.level ? " me" : ""}" tabindex="0" data-lv="${Number(b.level)}" data-exp="${Number(b.exp_hr)}" data-n="${Number(b.players)}">
       <i style="height:${Math.max(6, b.exp_hr / tall * 100).toFixed(0)}%"></i><span>${Number(b.level)}</span></div>`).join("");
@@ -324,16 +319,7 @@ function detailHtml(m, id) {
     ? `<div class="lv-bars" role="group" aria-label="EXP per hour at each level, from ${Number(m.by_level[0].level)} to ${Number(m.by_level.at(-1).level)}">${bars}</div>
       <div class="lv-tip" role="status" aria-live="polite"><b></b><span></span></div>`
     : `<p class="d-none">Players here are all at one level so far.</p>`}</div>`;
-  let trend = `<p class="d-none">Not enough runs yet to show a trend.</p>`;
-  if (m.trend) {
-    const change = Math.round((m.trend.recent.exp_hr / m.trend.before.exp_hr - 1) * 100);
-    const word = change > 2 ? `<b class="up">▲ ${change}%</b>` : change < -2 ? `<b class="down">▼ ${Math.abs(change)}%</b>` : `<b>about the same</b>`;
-    trend = `<div class="d-pair"><div><b>${fmt(m.trend.recent.exp_hr)}</b><span>Last 7 days · ${plural(m.trend.recent.players, "player")}</span></div>
-      <div><b>${fmt(m.trend.before.exp_hr)}</b><span>Before · ${plural(m.trend.before.players, "player")}</span></div></div>
-      <p class="d-note">${word} since earlier.</p>`;
-  }
-  return `<div class="detail" id="d-${id}" role="region" aria-label="Details for ${esc(m.map)}">${compare}${levels}
-    <div class="d-card"><h4>Lately</h4>${trend}</div></div>`;
+  return `<div class="detail" id="d-${id}" role="region" aria-label="Details for ${esc(m.map)}">${party}${levels}</div>`;
 }
 
 /** The chart with the current sort and filter. `animate` is false when only the order changed. */
@@ -343,16 +329,49 @@ function showChart(animate = true) {
   const near = data.maps.filter((m) => !m.widened).sort(bySort), wide = data.maps.filter((m) => m.widened).sort(bySort);
   const maps = [...near, ...wide];                  // (the details look maps up by this order)
   const early = view.hideEarly ? [] : data.early;
-  const s = scaleFor([...maps, ...early]);
   shown = { maps, early };
   const touch = matchMedia("(hover: none)").matches;
-  const minPlayers = data.min_players;
-  $("results").innerHTML = `<div class="chart">
-    <div class="tools">
+  const minPlayers = data.min_players, far = Number(data.ranges[data.ranges.length - 1]);
+  const tools = `<div class="tools">
       <label>Sort by <select id="sort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}"${k === view.sort ? " selected" : ""}>${esc(v[0])}</option>`).join("")}</select></label>
       ${data.early.length ? `<label class="chk"><input type="checkbox" id="hide-early"${view.hideEarly ? " checked" : ""}> Hide early data</label>` : ""}
       ${newPlayers || view.withNew ? newBox() : ""}
-    </div>
+    </div>`;
+  const hook = () => {
+    $("sort").addEventListener("change", (e) => { view.sort = e.target.value; remember(); showChart(false); });
+    $("hide-early")?.addEventListener("change", (e) => { view.hideEarly = e.target.checked; remember(); showChart(false); });
+    hookNew();
+  };
+  if (!maps.length && !early.length) {             // nothing ranked, and early data is hidden
+    $("results").innerHTML = `<div class="chart">${tools}<div class="early-head none-head"><b>Nothing ranked here yet</b>
+      <span>No map has ${Number(minPlayers)} players around your level yet.</span>
+      <button class="more-btn inline" type="button" id="show-early">Show early data (${plural(data.early.length, "map")})</button></div></div>`;
+    $("show-early").addEventListener("click", () => { view.hideEarly = false; remember(); showChart(true); });
+    hook();
+    return;
+  }
+  const s = scaleFor([...maps, ...early]);
+  // In order: maps at your level, the wider range, early data. Only the first TOP maps show until "Show more".
+  const parts = near.map((m, i) => ({ row: true, html: rowHtml(m, i, s, false) }));
+  if (wide.length) {
+    parts.push({ html: `<div class="early-head wide-head"><b>Wider range</b>
+      <span>${near.length ? "Not enough players within " + Number(data.ranges[0]) + " levels of you for these, so they use players up to " + far + " levels away. Less specific to your level."
+        : "Nobody has shared enough runs within " + Number(data.ranges[0]) + " levels of you yet, so these use players up to " + far + " levels away."}</span></div>` });
+    wide.forEach((m, j) => parts.push({ row: true, html: rowHtml(m, near.length + j, s, false, 0, j + 1) }));
+  }
+  if (early.length) {
+    parts.push({ html: `<div class="early-head"><b>${maps.length ? "Early data" : "Nothing ranked here yet"}</b>
+      <span>${maps.length ? `Fewer than ${Number(minPlayers)} players so far, so not ranked yet.`
+        : `No map has ${Number(minPlayers)} players around your level yet. Here's what's come in so far.`}</span></div>` });
+    early.forEach((m, i) => parts.push({ row: true, html: rowHtml(m, i, s, true, minPlayers - m.players) }));
+  }
+  const rows = parts.filter((p) => p.row).length, extra = Math.max(0, rows - TOP);
+  let cut = parts.length;
+  for (let k = 0, seen = 0; k < parts.length; k++) if (parts[k].row && ++seen === TOP) { cut = k + 1; break; }
+  const html = (list) => list.map((p) => p.html).join("");
+  const moreLabel = () => view.showAll ? `Show the top ${TOP} only` : `Show ${plural(extra, "more map")}`;
+  $("results").innerHTML = `<div class="chart">
+    ${tools}
     <div class="chart-top">
       <div class="legend" aria-hidden="true"><span><i class="lg-dot"></i>One player</span><span><i class="lg-med"></i>Typical</span>
         <span><i class="lg-band"></i>Middle half of players</span><span><i class="lg-out"></i>Left out (unusual)</span>${view.withNew ? `<span><i class="lg-dot lg-fresh"></i>New player</span>` : ""}</div>
@@ -360,29 +379,29 @@ function showChart(animate = true) {
       <small>${touch ? "Tap" : "Point at"} a dot for details</small>
     </div>
     <div class="axis" aria-hidden="true"><div class="scale">${s.ticks.map((t) => `<b style="left:${s.x(t)}%">${compact(t)}</b>`).join("")}</div></div>
-    ${near.map((m, i) => rowHtml(m, i, s, false)).join("")}
-    ${wide.length ? `<div class="early-head wide-head"><b>Wider range</b>
-      <span>${near.length ? "Not enough players within " + Number(data.ranges[0]) + " levels of you for these, so they use players up to " + Number(data.ranges[2]) + " levels away. Less specific to your level."
-        : "Nobody has shared enough runs within " + Number(data.ranges[0]) + " levels of you yet, so these use players up to " + Number(data.ranges[2]) + " levels away."}</span></div>
-      ${wide.map((m, j) => rowHtml(m, near.length + j, s, false, 0, j + 1)).join("")}` : ""}
-    ${early.length ? `<div class="early-head"><b>${maps.length ? "Early data" : "Nothing ranked here yet"}</b>
-      <span>${maps.length ? `Fewer than ${Number(minPlayers)} players so far, so not ranked yet.`
-        : `No map has ${Number(minPlayers)} players around your level yet. Here's what's come in so far.`}</span></div>
-      ${early.map((m, i) => rowHtml(m, i, s, true, minPlayers - m.players)).join("")}` : ""}
-    <div class="chart-foot">EXP/hr is the chart's scale; the time per level is the same pace as a share of your level's EXP.
-      Each player counts once, however much they play, and a new player's runs start counting after a day. ${JOIN.replace('class="more" ', "")}</div>
+    ${html(parts.slice(0, cut))}
+    ${extra ? `<div id="more-rows"${view.showAll ? "" : " hidden"}>${html(parts.slice(cut))}</div>
+      <button class="more-btn" type="button" id="more-btn" aria-expanded="${view.showAll}" aria-controls="more-rows">${moreLabel()}</button>` : ""}
+    <div class="chart-foot">Each player counts once, however much they play, and a new player's runs start counting after a day.
+      ${JOIN.replace('class="more" ', "")}</div>
   </div><div class="tip" role="status"><b></b><span></span></div>`;
   spreadDots();
   hookDetails();
   if (animate) animateChart();
-  $("sort").addEventListener("change", (e) => { view.sort = e.target.value; remember(); showChart(false); });
-  $("hide-early")?.addEventListener("change", (e) => { view.hideEarly = e.target.checked; remember(); showChart(false); });
-  hookNew();
+  $("more-btn")?.addEventListener("click", (e) => {
+    view.showAll = !view.showAll;
+    $("more-rows").hidden = !view.showAll;
+    e.currentTarget.setAttribute("aria-expanded", String(view.showAll));
+    e.currentTarget.textContent = moreLabel();
+    if (view.showAll) spreadDots();            // (hidden rows had no width to spread their dots on)
+    else e.currentTarget.scrollIntoView({ block: "nearest" });
+  });
+  hook();
 }
 
 /** Keeps the sort and filter for next time, and in the address. */
 function remember() {
-  try { localStorage.setItem("ask", JSON.stringify({ ...saved(), sort: view.sort, hide: view.hideEarly, withNew: view.withNew })); } catch {}
+  try { localStorage.setItem("ask", JSON.stringify({ ...saved(), sort: view.sort, showEarly: !view.hideEarly, withNew: view.withNew })); } catch {}
   syncUrl();
 }
 

@@ -145,10 +145,11 @@ Mesos/hr is what you pick up. **Net mesos/hr** takes off what the potions you dr
 **[mcwo.app](https://mcwo.app)** shows which maps give the most EXP/hr and mesos/hr for your class and level, solo or in a party, from real hours farmed by players. Click **Best maps** at the top of the overlay to open it, already filled in for you.
 
 - **Enter your level and whether you're solo or in a party, then pick your class and path.** Paths are named after their 4th job, like Night Lord or Bishop, and include the jobs before it (Shadower is Bandits, Chief Bandits and Shadowers). Under Lv 30 you're still 1st job, so Path is greyed out and you see what every player of your class gets.
-- **Around your level** starts at 3 levels either way. If a map doesn't have enough players that close, it widens to 5, then 8 levels, and the row says so ("wider range"). Parties of any size count together.
-- **Each map shows** its EXP/hr and mesos/hr, how many players and hours of farming it's based on, and about how long a level takes there (**% of a level per hour**). The dots on each line are players' typical runs, coloured by how their level compares to yours.
+- **Around your level** starts at 3 levels either way. If a map doesn't have enough players that close, it widens to 5 levels, and the row says so ("wider range"). Parties of any size count together.
+- **The top 5 maps show first.** Click **Show more maps** under them to see the rest.
+- **Each map shows** its EXP/hr and mesos/hr, and how many players and hours of farming it's based on. The dots on each line are players' typical runs, coloured by how their level compares to yours.
 - **Include new players:** a new player's runs only count after 24 hours and 4 runs, so the site starts strict. Tick **Include new players** to see them too. Those maps are labelled, the new players' dots are faded, and maps with a name the game doesn't list are never shown from new players.
-- **Sort and filter** the list, open **Details** on a map (solo vs party, EXP/hr by level, the trend lately), or switch to the **Leveling ladder** to see which maps to use as you level. **Copy link** shares exactly what you're looking at.
+- **Sort and filter** the list, open **Details** on a map (EXP/hr by party size and by level), or switch to the **Leveling ladder** to see which maps to use as you level. **Copy link** shares exactly what you're looking at.
 
 ![The best-maps website, with a map's details open](docs/screenshot-site.png)
 
@@ -156,7 +157,7 @@ Mesos/hr is what you pick up. **Net mesos/hr** takes off what the potions you dr
 - **Mesos only when they can be trusted:** a run is sent with mesos only if you looked at your inventory at the start and within 30 seconds after the end. Otherwise it is sent with EXP only. If you pause right after a run, the overlay may ask you to open the inventory.
 - **Sharing is your choice.** The first time you start the overlay, it asks whether to share your runs. You can change it any time in ⚙.
 - **What's shared:** the map, your level, class and party size, the EXP and mesos you got (EXP only if the mesos couldn't be trusted), and a random ID for your copy of the overlay. Never your character's name, and never anything about potions.
-- **Keeping it honest:** the site uses the typical (median) run, counts each player once, leaves out runs far from what other players get there, a new player's runs only count after 24 hours and 4 runs, and a map is only ranked once 3 different players have farmed it (before that, it's shown greyed out as early data). Every player's typical run is a dot on the chart, so anything odd is easy to spot.
+- **Keeping it honest:** the site uses the typical (median) run, counts each player once, leaves out runs far from what other players get there, a new player's runs only count after 24 hours and 4 runs, and a map is only ranked once 3 different players have farmed it (before that, it's early data: hidden unless you untick **Hide early data**, and greyed out). Every player's typical run is a dot on the chart, so anything odd is easy to spot.
 
 ## How accurate is it?
 

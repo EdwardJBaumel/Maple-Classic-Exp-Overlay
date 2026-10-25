@@ -312,7 +312,11 @@
   .chip.fresh { color: var(--dim); background: var(--card2); box-shadow: inset 0 0 0 1px var(--line); margin-top: 0; }
   .chip.widen { color: #9cc4ff; background: rgba(120, 170, 255, 0.1); box-shadow: inset 0 0 0 1px rgba(120, 170, 255, 0.28); margin-top: 0; }
   .meta .chip { vertical-align: 1px; }
-  .pace { font-size: 12.5px; color: var(--dim); margin-top: 3px; white-space: nowrap; }
+  .more-btn { display: block; width: 100%; padding: 14px 22px; font: inherit; font-size: 14px; font-weight: 600; color: var(--gold-soft);
+    background: rgba(0, 0, 0, 0.12); border: 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .more-btn:hover { color: var(--gold); background: rgba(0, 0, 0, 0.06); }
+  .more-btn.inline { display: inline-block; width: auto; margin-top: 10px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .none-head { padding-bottom: 20px; }
   .open { margin-top: 6px; display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600;
     color: var(--gold-soft); background: none; border: 0; padding: 2px 0; cursor: pointer; }
   .open:hover { color: var(--gold); }
@@ -325,11 +329,15 @@
   @keyframes openup { from { opacity: 0; transform: translateY(-6px); } }
   .d-card { background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; min-width: 0; }
   .d-card h4 { margin: 0 0 10px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
-  .d-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .d-pair b { display: block; font-size: 20px; color: var(--text); font-variant-numeric: tabular-nums; }
-  .d-pair span { font-size: 12.5px; color: var(--dim); }
-  .d-note { margin: 10px 0 0; font-size: 13px; color: var(--dim); }
-  .d-note b.up { color: #93d9ab; } .d-note b.down { color: #ff9b7f; }
+  .pt-rows { display: grid; gap: 9px; }
+  .pt { display: grid; grid-template-columns: 82px 1fr auto; align-items: center; gap: 10px; }
+  .pt span { font-size: 13px; color: var(--text); line-height: 1.2; }
+  .pt small { display: block; font-size: 11.5px; color: var(--faint); }
+  .pt > i { display: block; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.05); overflow: hidden; }
+  .pt > i i { display: block; height: 100%; border-radius: 4px; background: #4a4f59; }
+  .pt b { font-size: 14px; color: var(--text); font-variant-numeric: tabular-nums; min-width: 58px; text-align: right; }
+  .pt.me span, .pt.me b { color: var(--gold); font-weight: 700; }
+  .pt.me > i i { background: var(--gold); }
   .d-none { margin: 0; font-size: 13px; color: var(--faint); }
   .lv-bars { display: flex; align-items: flex-end; gap: 4px; height: 92px; }
   .lvb { position: relative; flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
@@ -361,7 +369,7 @@
   .pick.top { box-shadow: inset 3px 0 0 var(--gold); }
   .pick b { display: block; font-size: 15px; font-weight: 600; }
   .pick span { display: block; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
-  .seg button:focus-visible, .open:focus-visible, .pick:focus-visible, .tools select:focus-visible, .tools input:focus-visible, .btn.small:focus-visible {
+  .seg button:focus-visible, .open:focus-visible, .more-btn:focus-visible, .pick:focus-visible, .tools select:focus-visible, .tools input:focus-visible, .btn.small:focus-visible {
     outline: 2px solid var(--gold); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { .detail { animation: none; } }
   @media (max-width: 720px) {
@@ -560,7 +568,7 @@
       <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
         <h3>Outliers left out</h3><p>Runs under half or over double what others get on that map are dropped.</p></div>
       <div class="rule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2 20c0-3 2.7-5 6-5s6 2 6 5m0-5c3.3 0 8 2 8 5"/></svg>
-        <h3>3 players or more</h3><p>A map is only ranked once 3 different players have farmed it. Before that, it's shown greyed out as early data.</p></div>
+        <h3>3 players or more</h3><p>A map is only ranked once 3 different players have farmed it. Before that, it's early data: hidden at first, and greyed out when you show it.</p></div>
     </div>
   </div>
 </section>
@@ -579,7 +587,7 @@
     <details><summary>How do I read the chart?</summary>
       <p>Each row is a map, and every row uses the same scale, so further right means more EXP/hr. Each dot is one player: their typical run on that map, however much they've played it. The gold line is the typical EXP/hr there (half of players get more, half less), and the shaded bar is what the middle half of players get. A short bar means most players get about the same; a long one means gear, skills and how busy the map is make a big difference. Hollow red rings are runs left out of the numbers for being under half or over double what others get, like an AFK player or a leech. Point at anything (or tap it) for the exact numbers.</p></details>
     <details><summary>Why isn't my map or class here yet?</summary>
-      <p>A map is ranked once 3 different players around your level (close to your level: a map starts with players within 3 levels of yours and only goes up to 5, then 8, if it needs more players, and says so), on the same path, and solo or in a party like you, have shared a run there. Until then, it's listed under Early data, greyed out, so you can see what's come in so far. A new player's runs start counting a day after their first one, and once they have a few, so a flood of made-up players can't change the numbers at once. Map names that the game doesn't have (an event map, say) show once 3 players have shared them on 2 different days. The more people share, the faster it fills in. You can help by sharing yours!</p></details>
+      <p>A map is ranked once 3 different players around your level (close to your level: a map starts with players within 3 levels of yours and only goes up to 5 if it needs more players, and says so), on the same path, and solo or in a party like you, have shared a run there. Until then, it's early data: untick Hide early data to see what's come in so far, greyed out. A new player's runs start counting a day after their first one, and once they have a few, so a flood of made-up players can't change the numbers at once. Map names that the game doesn't have (an event map, say) show once 3 players have shared them on 2 different days. The more people share, the faster it fills in. You can help by sharing yours!</p></details>
     <details><summary>Found a problem?</summary>
       <p>Use <b>Report a bug</b> in the overlay's settings, or open an issue on <a href="https://github.com/beanguri/Maple-Classic-Exp-Overlay/issues">GitHub</a>.</p></details>
   </div></div>

@@ -24,7 +24,7 @@ const LATEST = 12;                  // runs in the bar at the top of the site
 const LATEST_DAYS = 14;             // how far back it looks
 const BAND = [0.5, 2.0];            // runs outside this share of the median are outliers
 const LEVEL_WINDOW = 5;             // "around your level" for the latest-runs bar: within this many levels
-const RADII = [3, 5, 8];            // the levels either way a map's numbers come from: the smallest that has MIN_PLAYERS
+const RADII = [3, 5];               // the levels either way a map's numbers come from: the smallest that has MIN_PLAYERS
 const MAX_REVIEW = 500;             // names not on the game's map list that are kept for review
 const MAX_PER_REQUEST = 50;
 const MAX_MESOS_HR = 2e7;          // mesos an hour: more than any player makes
@@ -488,7 +488,7 @@ async function getStats(url, env, ctx, now) {
     return json({ error: "give class (and path), level (1-250) and party (solo or party)" }, 400);
   }
   const withNew = wantsNew(url);
-  return cached(url, env, ctx, `stats2/${name}/${path || ""}/${level}/${party}${withNew ? "/new" : ""}`, KEEP.stats,
+  return cached(url, env, ctx, `stats3/${name}/${path || ""}/${level}/${party}${withNew ? "/new" : ""}`, KEEP.stats,
     () => findMaps(env, name, path, jobs, level, party, now, withNew));
 }
 
@@ -550,9 +550,9 @@ const recentCutoff = (now) => new Date(now - RECENT_DAYS * 864e5).toISOString();
 
 /**
  * The best maps for a class and level. Each map's numbers come from the players at the fewest
- * levels either side of yours (RADII: 3, then 5, then 8) that give it MIN_PLAYERS players, so a
+ * levels either side of yours (RADII: 3, then 5) that give it MIN_PLAYERS players, so a
  * busy level stays precise and a quiet one still fills in (the map says how wide it had to go).
- * Everything the page shows, including solo vs party, EXP/hr by level and the recent trend, is
+ * Everything the page shows, including EXP/hr by party size and by level, is
  * worked out here from the same rows: one request and one query.
  */
 async function findMaps(env, name, path, jobs, level, party, now, withNew = false) {
@@ -577,7 +577,6 @@ async function findMaps(env, name, path, jobs, level, party, now, withNew = fals
   };
   const myMaps = grouped(mine), theirMaps = grouped(theirs);
   const within = (list, radius) => list.filter((r) => Math.abs(r.level_start - level) <= radius);
-  const weekAgo = new Date(Date.now() - 7 * 864e5).toISOString().slice(0, 16);
 
   const found = [];
   for (const [map, list] of myMaps) {
@@ -588,11 +587,14 @@ async function findMaps(env, name, path, jobs, level, party, now, withNew = fals
       if (got && (got.ranked || radius === widest)) { s = got; used = radius; break; }
     }
     if (!s) continue;
-    const near = within(list, used);
-    const other = within(theirMaps.get(map) || [], used);
-    const otherSummary = other.length ? summarize(other) : null;
-    const recent = near.filter((r) => r.started >= weekAgo), before = near.filter((r) => r.started < weekAgo);
-    const recentS = recent.length ? summarize(recent) : null, beforeS = before.length ? summarize(before) : null;
+    // EXP/hr for each party size (solo, 2 to 6) at the same levels, from both sides (solo and party rows)
+    const both = [...within(list, used), ...within(theirMaps.get(map) || [], used)];
+    const byParty = [];
+    for (let size = 1; size <= 6; size++) {
+      const each = both.filter((r) => r.party === size);
+      const got = each.length ? summarize(each) : null;
+      if (got) byParty.push({ party: size, players: got.players, exp_hr: got.exp_hr });
+    }
     const levels = [];
     for (let l = level - widest; l <= level + widest; l++) {
       const here = list.filter((r) => r.level_start === l);
@@ -601,10 +603,7 @@ async function findMaps(env, name, path, jobs, level, party, now, withNew = fals
     }
     found.push({
       map, ...s, levels: [Math.max(1, level - used), level + used], widened: used > RADII[0],
-      other: otherSummary && { solo: party !== "solo", players: otherSummary.players, exp_hr: otherSummary.exp_hr, pct_hr: otherSummary.pct_hr },
-      trend: recentS && beforeS ? { recent: { players: recentS.players, exp_hr: recentS.exp_hr },
-        before: { players: beforeS.players, exp_hr: beforeS.exp_hr } } : null,
-      by_level: levels,
+      by_party: byParty, by_level: levels,
     });
   }
   // Ranked maps, best first. Maps with fewer players are early data: shown, but not ranked, most players first.
