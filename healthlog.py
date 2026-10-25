@@ -228,14 +228,24 @@ class HealthLog:
             out["hist"] = {str(k): int(num(v)) for k, v in rec["hist"].items() if str(k).isdigit()}
         if isinstance(rec.get("games"), dict):
             out["games"] = {str(k): int(num(v)) for k, v in list(rec["games"].items())[:12]}
-        if isinstance(rec.get("snap"), dict):
-            out["snap"] = rec["snap"]
+        out["snap"] = HealthLog._clean_snap(rec.get("snap"))
         src = rec.get("shadow") if isinstance(rec.get("shadow"), dict) else {}
         for key in SHADOW_KEYS:
             out["shadow"][key] = int(num(src.get(key)))
         out["v2_ms"], out["v2_n"] = float(num(rec.get("v2_ms"))), int(num(rec.get("v2_n")))
         out["sent"] = rec.get("sent") is True
         return out
+
+    @staticmethod
+    def _clean_snap(snap):
+        """A snapshot read from the file: only the right kinds of values are kept, or none at all."""
+        if not isinstance(snap, dict):
+            return {}
+        screens = snap.get("screens")
+        if (not isinstance(screens, list) or not all(isinstance(s, list) and len(s) == 3 for s in screens[:4])
+                or not all(isinstance(snap.get(k), str) for k in ("version", "os", "capture", "tesseract"))):
+            return {}
+        return {k: snap[k] for k in ("version", "os", "capture", "tesseract")} | {"screens": [list(s) for s in screens[:4]]}
 
     def save(self, force=True):
         """Writes the record (atomically). Without `force` it only does so every SAVE_EVERY seconds."""
