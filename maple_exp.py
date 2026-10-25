@@ -312,7 +312,11 @@ def locate_tesseract():
     global tesseract_where
     state, why, seen = "missing", "", None
     for p in PLATFORM.tesseract_candidates(HOME_DIR, APP_DIR):
-        if not (p.is_file() and os.access(p, os.X_OK)):
+        try:
+            usable = p.is_file() and os.access(p, os.X_OK)
+        except OSError:                     # (a folder in PATH we aren't allowed into: not a program we can use)
+            usable = False
+        if not usable:
             continue
         state = "no_eng"
         for folder in PLATFORM.tessdata_candidates(p):
@@ -6303,7 +6307,11 @@ def main():
         return
     PLATFORM.ask_permissions()
     move_old_data()
-    tess, tessdata, tesseract_state, tesseract_why = locate_tesseract()
+    try:
+        tess, tessdata, tesseract_state, tesseract_why = locate_tesseract()
+    except Exception as e:                  # (EXP and mesos work without Tesseract: never a reason not to start)
+        log_error("looking for Tesseract", e)
+        tess = None
     if tess:
         TESS = ocr.Tesseract(tess, tessdata=tessdata or None)
         tesseract_ok = True

@@ -216,6 +216,34 @@ finally:
     m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
     m.tesseract_state, m.tesseract_why = "missing", ""
 
+# a program Windows won't let us look at (a PATH folder we have no access to) is skipped, not a crash at start-up
+class Locked:
+    def is_file(self):
+        raise PermissionError(13, "Access is denied")
+
+
+try:
+    base2 = Path(tempfile.mkdtemp())
+    good2 = fake_install(base2 / "good", big)
+    m.PLATFORM.tessdata_candidates = lambda exe: [exe.parent / "tessdata"]
+    m.PLATFORM.tessdata_arg = lambda exe, folder: str(folder)
+    m.PLATFORM.tesseract_candidates = lambda home, app: [Locked(), good2]
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        check("a candidate that can't be looked at is skipped for the next good one", exe == str(good2) and state == "ok")
+    except Exception as e:
+        check(f"a candidate that can't be looked at is skipped for the next good one (it raised {type(e).__name__})", False)
+    m.PLATFORM.tesseract_candidates = lambda home, app: [Locked()]
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        check("...and when it is the only one there is no Tesseract (missing), not a crash", exe is None and state == "missing")
+    except Exception as e:
+        check(f"...and when it is the only one there is no Tesseract (it raised {type(e).__name__})", False)
+finally:
+    del m.PLATFORM.tessdata_arg
+    m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+    m.tesseract_state, m.tesseract_why = "missing", ""
+
 # --tessdata-dir is passed, and a TESSDATA_PREFIX of ours can't redirect it
 os.environ["TESSDATA_PREFIX"] = r"C:\wrong\place"
 try:
