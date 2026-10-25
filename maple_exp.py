@@ -15,6 +15,7 @@ inside %APPDATA% on Windows, ~/Library/Application Support on macOS (named after
 name, Maple EXP/hr, so updating keeps them). It runs on Windows and macOS: what differs
 between them is in platforms/.
 """
+import contextlib
 import hashlib
 import hmac
 import json
@@ -99,6 +100,18 @@ POTION_SECONDS = 3          # how often the potion bar is read (a small picture,
 POTION_FULL_LOOK = 15       # every this many reads the bar is looked for over its whole search range again
 OUTLINE_SECONDS = 8         # how often the (costly) search for a see-through mesos box may run
 LEVEL_RECHECK_SECONDS = 30  # a level read from the badge is looked at again this often (it only changes at a level-up)
+PART_LOG_SECONDS = 600      # a reading part that keeps failing is written to errors.log this often at most
+PART_NOTE_SECONDS = 120     # ...and its status note stays this long after its last failure
+PART_NOTES = {              # what the status line says while a part of the reading fails
+    "map name": "Map names can't be read right now",
+    "mesos": "Mesos can't be read right now",
+    "potions": "The potion bar can't be read right now",
+    "window scan": "The party list and shop windows can't be checked right now",
+    "class": "The class can't be read right now",
+    "name print": "Telling characters apart isn't working right now",
+    "level": "The level badge can't be read right now",
+    "Tesseract": "The backup number reader (Tesseract) isn't working right now",
+}
 LEVEL_FAILS_FOR_FALLBACK = 3    # badge reads that failed in a row before typing the level in is offered
 DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "check_updates": True, "skip_version": "", "ui_scale": 100, "compact": False, "hotkeys_on": True,
@@ -1382,6 +1395,44 @@ class ScreenReader:
         self._level_candidate = None    # a level seen once, waiting for a second capture to agree
         self.name_print = None      # a small picture of the character's name row (see level_ocr.name_print); never read as text
         self.next_name_read = 0.0
+        self.part_errors = Counter()        # how often each part of the reading failed (by part name)
+        self.error_types = Counter()        # ...and by exception type name (never the message)
+        self.part_failed_at = {}            # part -> when it last failed, until a later try works
+        self._part_logged = {}              # part -> (when errors.log last heard of it, failures skipped since)
+
+    @contextlib.contextmanager
+    def _part(self, part):
+        """One part of a look (map name, mesos, ...): if it raises, that part counts as not read this look
+        and the others carry on."""
+        before = self.part_failed_at.get(part)
+        try:
+            yield
+        except Exception as e:
+            self._part_failed(part, e)
+        else:
+            if self.part_failed_at.get(part) == before:     # (unless the part caught a failure itself)
+                self.part_failed_at.pop(part, None)
+
+    def _part_failed(self, part, exc):
+        now = time.monotonic()
+        self.part_errors[part] += 1
+        self.error_types[type(exc).__name__] += 1
+        self.part_failed_at[part] = now
+        last, skipped = self._part_logged.get(part, (None, 0))
+        if last is not None and now - last < PART_LOG_SECONDS:
+            self._part_logged[part] = (last, skipped + 1)           # (it would fill errors.log at every look)
+            return
+        self._part_logged[part] = (now, 0)
+        more = f" ({skipped} more failures skipped since the last entry)" if skipped else ""
+        log_error(f"reading the {part} failed{more}", exc)
+
+    def _with_part_notes(self, reading):
+        now = time.monotonic()
+        said = [f"{PART_NOTES[p]} (details in errors.log)." for p, t in self.part_failed_at.items()
+                if p in PART_NOTES and now - t < PART_NOTE_SECONDS]
+        if not said:
+            return reading
+        return reading._replace(note=" ".join(([reading.note] if reading.note else []) + said))
 
     def use_window(self):
         self.mode, self.hwnd, self.box = "window", None, None
@@ -1431,14 +1482,20 @@ class ScreenReader:
             self.level_failures = max(self.level_failures, LEVEL_FAILS_FOR_FALLBACK)
             self.level_look = {"image": None, "votes": {}, "why": "Selected area: the level badge isn't in it"}
         if rect and self.gh:
-            name, note = self._read_info(sct, rect)
+            name = note = None
+            with self._part("map name"):
+                name, note = self._read_info(sct, rect)
             reading = self._read_extras(sct, rect, reading._replace(map=name, note=note))
             if self.exp_anchor and self.mode == "window":
-                self._read_job(sct, rect)
-                self._look_at_name(sct, rect)
+                with self._part("class"):
+                    self._read_job(sct, rect)
+                with self._part("name print"):
+                    self._look_at_name(sct, rect)
                 if reading.percent_only:        # no EXP number to tell the level from: the badge has to
-                    self._read_level(sct, rect)
-        return reading._replace(level=(self.level, "badge") if self.level and reading.percent_only and self.mode == "window" else None)
+                    with self._part("level"):
+                        self._read_level(sct, rect)
+        return self._with_part_notes(reading._replace(
+            level=(self.level, "badge") if self.level and reading.percent_only and self.mode == "window" else None))
 
     def map_blind_seconds(self):
         """How long the minimap's name box hasn't been visible (0 if it never was: no map to lose)."""
@@ -1467,7 +1524,8 @@ class ScreenReader:
                     own_rect=self.own_rect, covering=covering, exp_box=self.box, exp_misses=self.misses,
                     map_box=self.map_box, map_unread=self.map_unread, mesos_box=self.mesos_box,
                     mesos_fails=self.mesos_fails, two_boxes=self.two_boxes, mesos_learned=self.mesos_digits.complete,
-                    party_area=self.party_area, job_why=(self.job_look or {}).get("why") or "")
+                    party_area=self.party_area, job_why=(self.job_look or {}).get("why") or "",
+                    part_errors=dict(self.part_errors), error_types=dict(self.error_types))
 
     def _read_job(self, sct, rect):
         """Reads the class from the status bar now and then (it only changes at a job advance)."""
@@ -1538,6 +1596,7 @@ class ScreenReader:
             seen = level_ocr.read_level(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, TESS, look) if shot else None
         except Exception as e:              # (Tesseract failing or timing out, or anything unexpected: not a level, back off)
             look["why"] = f"the level read failed: {e}"
+            self._part_failed("level", e)
             seen = None
         self.level_look = look
         if seen is None:
@@ -1665,7 +1724,9 @@ class ScreenReader:
             return Reading(where, [got], True, f"{got[0]:,} [{got[1]:.2f}%]", view, boxes), lay
         # Unclear digits, or a reading that fits no level: not trusted. Readings that do fit
         # a level go first, so the tracker tries those.
-        cands = ([got] if got else []) + [c for c in tesseract_candidates(img, lay) if c != got]
+        cands = [got] if got else []
+        with self._part("Tesseract"):           # (the backup failing leaves the template reading standing)
+            cands += [c for c in tesseract_candidates(img, lay) if c != got]
         cands.sort(key=lambda c: not fits_exp_table(*c))
         if cands:
             e, p = cands[0]
@@ -1687,68 +1748,69 @@ class ScreenReader:
                 self.mesos_fails, self.next_outline = 0, 0.0
         if now >= self.next_scan:                     # look over the whole window
             self.next_scan = now + (SCAN_SECONDS if self.mesos_box else 2)
-            shot = self._hide_own(grab(sct, wx, wy, ww, wh))
-            if shot:
-                img, sx, sy = shot
-                hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)      # (made once for everything below)
-                window = find_money_window(img)                 # (shop, storage or trade)
-                if window:
-                    self.window, self.window_until = window, now + WINDOW_GRACE
-                if self.window:
-                    self.next_scan = now + WINDOW_SCAN_SECONDS  # mesos change here: look often
-                fields = find_mesos_fields(img, g, hsv, narrow=window == "shop")   # the solid box is easy to spot
-                if window == "trade" and not fields:            # its chat panel may cover the coin
-                    box = find_trade_mesos_box(img, g, hsv)
-                    fields = [box] if box else []
-                if window == "storage" and len(fields) == 2:
-                    fields = [max(fields)]                      # yours is the right-hand one
-                    self.two_boxes = False
-                elif window == "shop":
-                    self.two_boxes = False                      # (both would be yours: the first will do)
-                else:
-                    # A storage / trade window outside those cases shows a second mesos box next to
-                    # yours, and which is which can't be told: read neither until it's closed.
-                    self.two_boxes = len(fields) > 1
-                    if window == "storage":
-                        fields = []
-                field = None if self.two_boxes else (fields[0] if fields else None)
-                if field and window == "shop" and field[2] < 16 * g:
-                    # (its digits end a little further from the box's right edge)
-                    field = (field[0], field[1], field[2] - round(0.12 * field[3]), field[3])
-                if field and not self._readable(img, field):
-                    field = None                      # a white patch in the scene, not the box
-                # Look for it by its outline too if it's lost, or this window is in the way of
-                # where it was (it may have been moved from there).
-                if (field is None and not self.two_boxes and now >= self.next_outline
-                        and (self.mesos_box is None or self.mesos_fails >= 10 or self.mesos_covered)):
-                    field = self._find_seethrough_box(img, g, hsv)
-                    if field is None:
-                        self.next_outline = now + OUTLINE_SECONDS   # (it costs a lot on a big screen)
-                if self.two_boxes:
-                    self.mesos_box = None
-                if window and not field:
-                    self.mesos_box = None                       # (the old spot isn't yours here)
-                if field:
-                    box = (sx - wx + field[0], sy - wy + field[1], field[2], field[3])
-                    old = self.mesos_box
-                    if old is None or max(abs(a - b) for a, b in zip(box, old)) > 3:
-                        self.mesos_box, self.mesos_fails = box, 0
-                        if not window:                          # a window's own box isn't remembered
-                            moved = (ww, wh) + box
-                    self.window_box = bool(window)
-                area = self.party_area
-                if area and self._covered(*area):
-                    notes.append("This window is covering the party list.")
-                else:
-                    bars = find_party_bars(img, g, hsv)
-                    party = max(1, len(bars))
-                    if len(bars) >= 2:
-                        x0, y0 = min(b[0] for b in bars), min(b[1] for b in bars)
-                        x1, y1 = max(b[0] + b[2] for b in bars), max(b[1] + b[3] for b in bars)
-                        # Only the HP bars are counted, so only they (and a little room
-                        # around them) must be clear of this window.
-                        self.party_area = (sx + x0 - int(g), sy + y0 - int(g),
-                                           x1 - x0 + int(2 * g), y1 - y0 + int(2 * g))
+            with self._part("window scan"):
+                shot = self._hide_own(grab(sct, wx, wy, ww, wh))
+                if shot:
+                    img, sx, sy = shot
+                    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)      # (made once for everything below)
+                    window = find_money_window(img)                 # (shop, storage or trade)
+                    if window:
+                        self.window, self.window_until = window, now + WINDOW_GRACE
+                    if self.window:
+                        self.next_scan = now + WINDOW_SCAN_SECONDS  # mesos change here: look often
+                    fields = find_mesos_fields(img, g, hsv, narrow=window == "shop")   # the solid box is easy to spot
+                    if window == "trade" and not fields:            # its chat panel may cover the coin
+                        box = find_trade_mesos_box(img, g, hsv)
+                        fields = [box] if box else []
+                    if window == "storage" and len(fields) == 2:
+                        fields = [max(fields)]                      # yours is the right-hand one
+                        self.two_boxes = False
+                    elif window == "shop":
+                        self.two_boxes = False                      # (both would be yours: the first will do)
+                    else:
+                        # A storage / trade window outside those cases shows a second mesos box next to
+                        # yours, and which is which can't be told: read neither until it's closed.
+                        self.two_boxes = len(fields) > 1
+                        if window == "storage":
+                            fields = []
+                    field = None if self.two_boxes else (fields[0] if fields else None)
+                    if field and window == "shop" and field[2] < 16 * g:
+                        # (its digits end a little further from the box's right edge)
+                        field = (field[0], field[1], field[2] - round(0.12 * field[3]), field[3])
+                    if field and not self._readable(img, field):
+                        field = None                      # a white patch in the scene, not the box
+                    # Look for it by its outline too if it's lost, or this window is in the way of
+                    # where it was (it may have been moved from there).
+                    if (field is None and not self.two_boxes and now >= self.next_outline
+                            and (self.mesos_box is None or self.mesos_fails >= 10 or self.mesos_covered)):
+                        field = self._find_seethrough_box(img, g, hsv)
+                        if field is None:
+                            self.next_outline = now + OUTLINE_SECONDS   # (it costs a lot on a big screen)
+                    if self.two_boxes:
+                        self.mesos_box = None
+                    if window and not field:
+                        self.mesos_box = None                       # (the old spot isn't yours here)
+                    if field:
+                        box = (sx - wx + field[0], sy - wy + field[1], field[2], field[3])
+                        old = self.mesos_box
+                        if old is None or max(abs(a - b) for a, b in zip(box, old)) > 3:
+                            self.mesos_box, self.mesos_fails = box, 0
+                            if not window:                          # a window's own box isn't remembered
+                                moved = (ww, wh) + box
+                        self.window_box = bool(window)
+                    area = self.party_area
+                    if area and self._covered(*area):
+                        notes.append("This window is covering the party list.")
+                    else:
+                        bars = find_party_bars(img, g, hsv)
+                        party = max(1, len(bars))
+                        if len(bars) >= 2:
+                            x0, y0 = min(b[0] for b in bars), min(b[1] for b in bars)
+                            x1, y1 = max(b[0] + b[2] for b in bars), max(b[1] + b[3] for b in bars)
+                            # Only the HP bars are counted, so only they (and a little room
+                            # around them) must be clear of this window.
+                            self.party_area = (sx + x0 - int(g), sy + y0 - int(g),
+                                               x1 - x0 + int(2 * g), y1 - y0 + int(2 * g))
         mesos, image, boxes = None, None, ()
         self.mesos_covered = False
         if self.mesos_box:
@@ -1758,11 +1820,15 @@ class ScreenReader:
                 notes.append("This window is covering the inventory's mesos.")
                 self.mesos_covered = True
             else:
-                mesos, image, boxes = self._read_mesos(sct, wx + bx, wy + by, bw, bh)
+                with self._part("mesos"):
+                    mesos, image, boxes = self._read_mesos(sct, wx + bx, wy + by, bw, bh)
         window = self.window if now <= self.window_until else None
         if window:
             notes.append(f"{WINDOW_NAMES[window]} window open.")
-        bar = self._read_potion_bar(sct, rect, notes) if now >= self.next_bar else None
+        bar = None
+        if now >= self.next_bar:
+            with self._part("potions"):
+                bar = self._read_potion_bar(sct, rect, notes)
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
                                 mesos_at=moved, window=window, bar=bar, note=" ".join(notes) or None)
 
@@ -1776,7 +1842,7 @@ class ScreenReader:
                 self.potion_table = potions.PotionTable.load(ASSETS / "potion_table.json")
                 self.potion_digits = potions.load_digits(ASSETS / "potion_digits.npz")
             except Exception as e:
-                log_error("loading the potion table", e)
+                self._part_failed("potions", e)
                 self.next_bar = float("inf")                    # without it there's nothing to read
                 return None
         bx, by, bw, bh = potions.bar_crop_box(ww, wh)
@@ -1914,7 +1980,8 @@ class ScreenReader:
                         self.map_box, self.next_map_search = None, now + 1
                         self.map_unread, self.next_map_read = True, 0.0
                     elif self.map_unread and now >= self.next_map_read:
-                        name = read_map_name(shot[0], g)
+                        with self._part("map name"):
+                            name = read_map_name(shot[0], g)
                         self.map_look = {"image": shot[0], "text": name}
                         self.map_unread = name is None
                         self.next_map_read = now + (2 if hidden else 5)   # if unreadable, try again later

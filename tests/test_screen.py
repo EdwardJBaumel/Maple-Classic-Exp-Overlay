@@ -760,6 +760,93 @@ check("a %-only bar in a selected area is read, with no level, and typing one in
       got.percent_only and got.level is None and r.level_failures >= m.LEVEL_FAILS_FOR_FALLBACK
       and "Selected area" in r.level_look["why"])
 
+# ---- one failing part never stops the others (issues 5 and 9: Tesseract broke the map name and the EXP went with it)
+class Boom:
+    """A Tesseract that fails whatever it is asked."""
+    def __getattr__(self, name):
+        raise RuntimeError("Tesseract can't load eng.traineddata")
+
+
+def part_reader(templates=True):
+    r = m.ScreenReader(m.DigitTemplates.load() if templates else None)
+    r.hwnd, r.mode, r.own_rect = 1, "window", (-5000, -5000, 10, 10)
+    return r
+
+
+frame = cv2.imread(str(FRAMES / "exp_win-1280x720.png"))
+fh, fw = frame.shape[:2]
+fscreen = FakeScreen(frame)
+real_monotonic, real_tess, real_ok = m.time.monotonic, m.TESS, m.tesseract_ok
+real_candidates, real_map = m.tesseract_candidates, m.read_map_name
+clock = [1000.0]
+m.time.monotonic = lambda: clock[0]
+try:
+    m.TESS, m.tesseract_ok = Boom(), True
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, fw, fh)
+    clear = r.read(fscreen)
+    check("a clear EXP bar is read as usual while Tesseract is broken", clear.confident and clear.candidates)
+    r = part_reader(templates=False)       # (no templates: the digits are never sure, so the Tesseract backup is asked)
+    r._game_rect = lambda: (0, 0, fw, fh)
+    got = r.read(fscreen)
+    check("an unsure bar with a broken Tesseract still gives a look (no exception)", got.where and not got.confident)
+    check("...and counts it as a Tesseract part failure",
+          r.part_errors["Tesseract"] >= 1 and r.error_types["RuntimeError"] >= 1 and "Tesseract" in (got.note or ""))
+
+    # the map name raising: the same look still has its EXP, a note, and one entry in errors.log
+    m.TESS = real_tess
+    m.read_map_name = lambda bgr, gh: (_ for _ in ()).throw(RuntimeError("no eng.traineddata"))
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, fw, fh)
+    r.read(fscreen)                                    # (the first look finds the bar)
+    r.map_box, r.map_unread, r.next_map_read = (0, 0, 120, 30), True, 0.0
+    log_before = m.ERROR_LOG_PATH.read_text() if m.ERROR_LOG_PATH.exists() else ""
+    notes = []
+    for _ in range(5):
+        r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
+        clock[0] += 1.5
+        got = r.read(fscreen)
+        notes.append(got.note or "")
+        assert got.confident and got.candidates
+    log_after = m.ERROR_LOG_PATH.read_text() if m.ERROR_LOG_PATH.exists() else ""
+    entries = log_after[len(log_before):].count("reading the map name failed")
+    check("a failing map name keeps the EXP reading", got.confident and got.map is None)
+    check("...says so in the status note", all("Map names can't be read right now" in n for n in notes))
+    check(f"...and errors.log hears of it once, not at every look ({entries} entry for 5 looks)", entries == 1)
+    check("...with every failure counted", r.part_errors["map name"] == 5 and r.diagnostics()["part_errors"]["map name"] == 5
+          and r.diagnostics()["error_types"]["RuntimeError"] == 5)
+    clock[0] += m.PART_LOG_SECONDS + 1
+    r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
+    r.read(fscreen)
+    tail = m.ERROR_LOG_PATH.read_text()[len(log_after):]
+    check("...after 10 minutes it is written again, with the number skipped", "4 more failures skipped" in tail)
+    m.read_map_name = real_map
+    clock[0] += 1.5
+    r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
+    got = r.read(fscreen)
+    clock[0] += 1.5
+    got = r.read(fscreen)
+    check("a part that works again loses its note", "Map names" not in (got.note or ""))
+
+    # the potion bar and the mesos reader raising
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, fw, fh)
+    r.read(fscreen)
+    def boom(*a, **k):
+        raise ValueError("boom")
+    r._read_potion_bar, r._read_mesos = boom, boom
+    r.mesos_box, r.next_bar, r.next_scan = (10, 10, 100, 12), 0.0, float("inf")
+    clock[0] += 1.5
+    got = r.read(fscreen)
+    check("a failing potion bar or mesos reader keeps the EXP too",
+          got.confident and got.mesos is None and got.bar is None
+          and r.part_errors["potions"] == 1 and r.part_errors["mesos"] == 1
+          and "potion bar can't be read" in got.note and "Mesos can't be read" in got.note)
+    check("...and diagnostics() shows the counts", r.diagnostics()["part_errors"] == {"potions": 1, "mesos": 1})
+finally:
+    m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
+    m.tesseract_candidates, m.read_map_name = real_candidates, real_map
+
 if m.tesseract_ok:
     game = cv2.imread(str(Path(__file__).resolve().parent.parent / "docs" / "screenshot-game.jpg"))
     check("the real badge (Lv 32, a JPEG of the game at 1080p) reads as 32 with real Tesseract",
