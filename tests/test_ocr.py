@@ -116,5 +116,120 @@ else:
         got = m.read_job(cv2.imread(str(frames / name)), info["x0"], info["cy"], info["gh"])
         check(f"{name}: class {got!r} read in {real.runs - before} Tesseract run", got == info["job"] and real.runs - before == 1)
 
+# ---- which Tesseract is used: it needs a usable English file, and is told where it is
+import ast
+import types
+big = b"x" * (m.ENG_DATA_MIN + 1)
+saved_cands, saved_data = m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates
+
+
+def fake_install(root, data=None):
+    """A folder with a tesseract program (an empty file) and, if `data` is given, tessdata/eng.traineddata."""
+    root.mkdir(parents=True, exist_ok=True)
+    exe = root / "tesseract.exe"
+    exe.write_bytes(b"")
+    if data is not None:
+        (root / "tessdata").mkdir(exist_ok=True)
+        (root / "tessdata" / "eng.traineddata").write_bytes(data)
+    return exe
+
+
+try:
+    base = Path(tempfile.mkdtemp())
+    bad, cut, good = fake_install(base / "bad"), fake_install(base / "cut", b"x" * 1000), fake_install(base / "good", big)
+    m.PLATFORM.tessdata_candidates = lambda exe: [exe.parent / "tessdata"]
+    m.PLATFORM.tessdata_arg = lambda exe, folder: str(folder)
+    m.PLATFORM.tesseract_candidates = lambda home, app: [bad, cut, good]
+    exe, arg, state, why = m.locate_tesseract()
+    check("a program without eng.traineddata (or with a cut-off one) is skipped for the next good one",
+          exe == str(good) and state == "ok" and why == "" and Path(arg) == good.parent / "tessdata")
+    m.PLATFORM.tesseract_candidates = lambda home, app: [bad, cut]
+    exe, arg, state, why = m.locate_tesseract()
+    check("programs but no usable English file: state no_eng (file), nothing to use",
+          exe is None and state == "no_eng" and why == "file")
+    m.PLATFORM.tesseract_candidates = lambda home, app: [base / "nowhere" / "tesseract.exe"]
+    exe, arg, state, why = m.locate_tesseract()
+    check("no program at all: state missing", exe is None and state == "missing" and why == "")
+    m.PLATFORM.tessdata_arg = lambda exe, folder: None            # a folder name that can't be given to Tesseract
+    m.PLATFORM.tesseract_candidates = lambda home, app: [good]
+    exe, arg, state, why = m.locate_tesseract()
+    check("a data folder that can't be passed on: no_eng with the path reason", exe is None and state == "no_eng" and why == "path")
+    m.tesseract_state, m.tesseract_why = "no_eng", "file"
+    check("the 'file is missing' message names tessdata\\eng.traineddata and says EXP still works",
+          "tessdata\\eng.traineddata" in m.tesseract_note() and "EXP and mesos still work" in m.tesseract_note())
+    m.tesseract_why = "path"
+    check("the 'unusual characters' message says to move the folder",
+          "unusual characters" in m.tesseract_note() and "C:\\Games\\" in m.tesseract_note())
+    m.tesseract_state, m.tesseract_why = "missing", ""
+    check("the missing message keeps today's wording",
+          m.tesseract_note() == "Map names can't be read: Tesseract OCR is missing (see the README).")
+    m.tesseract_state = "ok"
+    check("no message when Tesseract works", m.tesseract_note() == "")
+finally:
+    del m.PLATFORM.tessdata_arg                                   # (back to the class's own)
+    m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+    m.tesseract_state, m.tesseract_why = "missing", ""
+
+# --tessdata-dir is passed, and a TESSDATA_PREFIX of ours can't redirect it
+os.environ["TESSDATA_PREFIX"] = r"C:\wrong\place"
+try:
+    calls.clear()
+    ocr.subprocess.run = fake_run("12\r\n")
+    ocr.Tesseract(r"C:\somewhere\tesseract.exe", tessdata=r"C:\data\tessdata").read_lines(two[:1])
+    args, kw = calls[-1]
+    check("--tessdata-dir <folder> is passed to every read", args[args.index("--tessdata-dir") + 1] == r"C:\data\tessdata")
+    check("TESSDATA_PREFIX is removed from the child's environment", "TESSDATA_PREFIX" not in kw["env"])
+    ocr.Tesseract(r"C:\somewhere\tesseract.exe").read_lines(two[:1])
+    check("without a data folder nothing is added", "--tessdata-dir" not in calls[-1][0])
+finally:
+    ocr.subprocess.run = real_run
+    os.environ.pop("TESSDATA_PREFIX", None)
+
+# the real program with the real data
+real_exe, real_arg, real_state, real_why = m.locate_tesseract()
+if real_exe:
+    check("the Tesseract that is installed is found, with its data folder", real_state == "ok" and m.tesseract_where[1])
+    sample = np.full((60, 300), 255, np.uint8)
+    cv2.putText(sample, "AB 12", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, 0, 2)
+    os.environ["TESSDATA_PREFIX"] = r"C:\wrong\place"
+    try:
+        check("a wrong TESSDATA_PREFIX in our own environment doesn't break a real read",
+              ocr.Tesseract(real_exe, tessdata=real_arg or None).read_line(sample).strip() == "AB 12")
+    finally:
+        os.environ.pop("TESSDATA_PREFIX", None)
+
+    # a data folder under Cyrillic and Chinese letters (outside a Western code page; an accent is not enough)
+    odd = Path(tempfile.mkdtemp()) / "\u041f\u0440\u0438\u0432\u0435\u0442 \u540d\u524d"
+    (odd / "tessdata").mkdir(parents=True)
+    (odd / "tessdata" / "eng.traineddata").write_bytes((Path(m.tesseract_where[1]) / "eng.traineddata").read_bytes())
+    m.PLATFORM.tessdata_candidates = lambda exe: [odd / "tessdata"]
+    m.PLATFORM.tesseract_candidates = lambda home, app: [Path(real_exe)]
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        if state == "ok":
+            check("Cyrillic/CJK data folder: a real read works through the folder as given or its short name",
+                  ocr.Tesseract(exe, tessdata=arg or None).read_line(sample).strip() == "AB 12")
+        else:
+            check("Cyrillic/CJK data folder with no short name: no_eng with the path reason, no crash",
+                  state == "no_eng" and why == "path")
+    finally:
+        m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+        m.tesseract_state, m.tesseract_why = "missing", ""
+
+# macOS rules, run on any OS: the methods are cut out of platforms/macos.py (it can only be imported on a Mac)
+tree = ast.parse((Path(m.__file__).parent / "platforms" / "macos.py").read_text(encoding="utf-8"))
+cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MacPlatform")
+wanted = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ("tessdata_candidates", "tessdata_arg")]
+space = {"Path": Path}
+exec(compile(ast.Module(body=wanted, type_ignores=[]), "macos.py", "exec"), space)
+mac = types.SimpleNamespace(**{k: (lambda f: lambda *a: f(None, *a))(v) for k, v in space.items() if k != "Path" and callable(v)})
+brew = Path("/opt/homebrew/bin/tesseract")
+check("macOS looks next to the program (Homebrew layout) first, then in Homebrew's prefixes",
+      [p.as_posix() for p in mac.tessdata_candidates(brew)]
+      == ["/opt/homebrew/share/tessdata", "/opt/homebrew/share/tessdata", "/usr/local/share/tessdata"])
+check("macOS passes --tessdata-dir only for a folder that isn't Tesseract's own default",
+      mac.tessdata_arg(brew, Path("/opt/homebrew/share/tessdata")) == ""
+      and Path(mac.tessdata_arg(brew, Path("/usr/local/share/tessdata"))).as_posix() == "/usr/local/share/tessdata")
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
