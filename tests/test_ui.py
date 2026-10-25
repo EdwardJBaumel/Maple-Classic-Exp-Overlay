@@ -931,6 +931,100 @@ except TypeError:
     check("the status doesn't crash before the first EXP reading (found_at unset)", False)
 app.reset()
 
+# ---- A13: the waiting notes of a %-only bar are not misreads
+def pct_at(p, level=30):
+    return pct._replace(candidates=[(None, p)], level=(level, "badge"))
+
+
+def start_pct(level=30):
+    app.reset()
+    app.reader.name_print = None
+    app.session.start(m.time.monotonic())
+    for p in (50.0, 50.0, 51.0, 51.0):
+        app._handle(pct_at(p, level))
+
+
+start_pct()
+for _ in range(12):                                     # the % wrapped and the badge still shows the old level
+    app._handle(pct_at(0.3))
+check(f"A13-2: waiting for the badge after a wrap isn't a misread ({app.rejected}, {app.status.get()!r})",
+      app.rejected == 0 and "trouble" not in app.status.get() and app.reader.box is not False)
+start_pct()
+for _ in range(12):
+    app._handle(pct_at(51.5, 31))                       # the badge says another level and nothing wrapped
+check(f"A13-2: 'level changed' isn't a misread either, and the status says to press Reset ({app.rejected})",
+      app.rejected == 0 and "Press Reset" in app.status.get())
+app.reset()
+for _ in range(12):
+    app._handle(pct_at(50.0, 150))
+check(f"A13-2: a level over the table is said as it is, not as trouble reading ({app.status.get()!r})",
+      app.rejected == 0 and "150" in app.status.get() and "trouble" not in app.status.get())
+
+# ---- A13-4: a badge covered by a window counts as a failure, so the fallback is offered and the status says why
+app.reset()
+app.reader.level, app.reader.level_failures, app.reader.next_level_read = None, 0, 0.0
+app.reader.exp_anchor, app.reader.gh = (100, 100), 11
+real_tess, real_tess_ok, real_blocked = m.TESS, m.tesseract_ok, app.reader._blocked
+m.TESS, m.tesseract_ok = object(), True
+app.reader._blocked = lambda *a: True
+for _ in range(m.LEVEL_FAILS_FOR_FALLBACK):
+    app.reader.next_level_read = 0.0
+    app.reader._read_level(None, (0, 0, 1000, 800))
+m.TESS, m.tesseract_ok, app.reader._blocked = real_tess, real_tess_ok, real_blocked
+app._handle(pct._replace(level=None))
+check(f"A13-4: a covered badge ends in the Level fallback, and the status says the window is in the way "
+      f"({app.reader.level_failures}, {app.status.get()!r})",
+      app._can_type_level() and "covering the level badge" in app.status.get())
+app.reader.level_failures = 0
+
+# ---- A13-5: a badge level doesn't outlive a place change or a reset; nor a forgotten level
+app.reader.level = 30
+app.reader.use_region((0, 0, 10, 10))
+check("A13-5: switching to a selected area forgets the badge level", app.reader.level is None)
+app.reader.level = 30
+app.reader.use_window()
+check("...and switching back does too", app.reader.level is None)
+app.reader.level = 30
+app.reset()
+check("...and Reset", app.reader.level is None)
+start_pct()
+app.reader.level = 30
+for _ in range(m.ExpTracker.WRAP_WAIT_READS):
+    app._handle(pct_at(0.3))
+check(f"...and so does the tracker forgetting it after a wrap nobody explained (reader level {app.reader.level})",
+      app.tracker.req is None and app.reader.level is None)
+app.reset()
+
+# ---- A13-8: a reading already queued when another character is found doesn't bring the old level back
+start_pct()
+app.reader.name_print = print_of("Fox")
+app._handle(pct_at(51.0))
+app.reader.name_print = print_of("Pip2")
+app._handle(pct_at(51.0))
+app.reader.name_print = print_of("Pip2")
+app._handle(pct_at(51.0))                                  # (the switch is seen here)
+app._handle(pct_at(51.0))                                  # a reading from before it, still carrying Lv 30
+check(f"A13-8: a level from before the character switch isn't taken again (req {app.tracker.req})",
+      app.tracker.req is None)
+app.reset()
+
+# ---- A13-10: an exact "Current" reading has no approx sign, even after a %-only one
+shown = {}
+real_show = app.view.show
+app.view.show = lambda **kw: shown.update(kw)
+app.reset()
+app.tracker.estimated, app.tracker._format = True, "exact"
+app.tracker.exp, app.tracker.pct, app.tracker.req = 40000, 41.8, 95700
+app._update_display()
+cur_exact = shown["details"]["Current"]
+app.tracker._format = "percent"
+app._update_display()
+cur_pct = shown["details"]["Current"]
+app.view.show = real_show
+app.reset()
+check(f"A13-10: 'Current' is only approximate while the bar shows only a % ({ascii(cur_exact)}, {ascii(cur_pct)})",
+      cur_exact and not cur_exact.startswith(m.APPROX) and cur_pct.startswith(m.APPROX))
+
 # ---- Report a bug > Send to the developer
 def new_windows(before):
     return [c for c in app.root.winfo_children() if c not in before and c.winfo_class() == "Toplevel"]
