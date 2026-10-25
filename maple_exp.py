@@ -88,6 +88,7 @@ HEALTH_PATH = DATA_DIR / "health.json"        # the day-by-day counts behind the
 TEMPLATE_PATH = ASSETS / "digits.npz"
 ICON_PATH = ASSETS / "icon.ico"
 POLL_SECONDS = 1.5          # how often to read the EXP bar
+WORKER_RETRY_SECONDS = 5       # if the reading thread can't open the screen: how long to wait before trying again
 ROLLING_WINDOW = 300        # seconds used for the "last 5 min" rate
 MESO_GAP = 120              # seconds without a mesos look after which a rise is believed, however big
 SEARCH_STRIP = 0.22         # bottom part of the game window searched for the EXP text
@@ -5062,20 +5063,27 @@ class App:
 
     # ---- background capture loop
     def _worker(self):
-        with mss.mss() as sct:
-            capture = ScreenCapture(sct)
-            while not self.stop_evt.is_set():
-                t0 = time.monotonic()
-                try:
-                    reading = self.reader.read(capture)
-                    self.q.put(("reading", reading._replace(ms=(time.monotonic() - t0) * 1000)))
-                    self.health.finished(t0)
-                except Exception as e:
-                    log_error("reading the screen", e)
-                    self.health.failed(e)
-                    self.q.put(("error", f"{type(e).__name__}: {e}"))
-                self.stop_evt.wait(max(0.1, POLL_SECONDS - (time.monotonic() - t0)))
-            self.health.alive = False
+        while not self.stop_evt.is_set():
+            try:
+                with mss.mss() as sct:
+                    capture = ScreenCapture(sct)
+                    while not self.stop_evt.is_set():
+                        t0 = time.monotonic()
+                        try:
+                            reading = self.reader.read(capture)
+                            self.q.put(("reading", reading._replace(ms=(time.monotonic() - t0) * 1000)))
+                            self.health.finished(t0)
+                        except Exception as e:
+                            log_error("reading the screen", e)
+                            self.health.failed(e)
+                            self.q.put(("error", f"{type(e).__name__}: {e}"))
+                        self.stop_evt.wait(max(0.1, POLL_SECONDS - (time.monotonic() - t0)))
+            except Exception as e:                  # (the screen couldn't be opened, or something outside a look broke:
+                log_error("starting to read the screen", e)         # never the end of the reading, try again)
+                self.health.failed(e)
+                self.q.put(("error", f"{type(e).__name__}: {e}"))
+                self.stop_evt.wait(WORKER_RETRY_SECONDS)
+        self.health.alive = False
 
     # ---- sharing runs
     def open_best_maps(self):

@@ -1512,5 +1512,60 @@ for scale, width in ((1.875, 2560), (1.875, 2500), (1.875, 1920), (2.8125, 3840)
     wide[15:15 + bar.shape[0], 12:12 + bar.shape[1]] = bar
     check(f"a {scale}x bar in a strip {width} px wide is found and read", read_v2(wide) == (68601, 71.68))
 
+# ---- the reading thread never dies for good: a screen that can't be opened (or anything else outside a look) is retried
+import queue  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+import types  # noqa: E402
+
+
+class GoodScreen:
+    monitors = [{"left": 0, "top": 0, "width": 100, "height": 100}]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def run_worker(opens, reader, seconds=1.5):
+    """The real App._worker on a stand-in app: `opens` is what mss.mss() does at each try.
+    -> (still alive after `seconds`, the kinds of message queued, looks done, still alive after being asked to stop)."""
+    app = types.SimpleNamespace(stop_evt=threading.Event(), q=queue.Queue(), health=m.Health(), reader=reader)
+    real_mss, real_wait = m.mss.mss, m.WORKER_RETRY_SECONDS
+    m.mss.mss, m.WORKER_RETRY_SECONDS = opens, 0.2
+    try:
+        t = threading.Thread(target=m.App._worker, args=(app,), daemon=True)
+        t.start()
+        time.sleep(seconds)
+        alive, kinds = t.is_alive(), [k for k, _ in list(app.q.queue)]
+        app.stop_evt.set()
+        t.join(3)
+        return alive, kinds, app.health.polls, t.is_alive()
+    finally:
+        m.mss.mss, m.WORKER_RETRY_SECONDS = real_mss, real_wait
+
+
+class OneLook:
+    def read(self, capture):
+        return m.Reading(*([None] * len(m.Reading._fields)))
+
+
+tries = []
+
+
+def flaky_open():
+    tries.append(1)
+    if len(tries) <= 2:
+        raise OSError("cannot open the screen (test)")
+    return GoodScreen()
+
+
+alive, kinds, polls, still = run_worker(flaky_open, OneLook())
+check("the reading thread tries again when the screen can't be opened, and then reads", alive and len(tries) >= 3 and polls >= 1)
+check("...the player is told meanwhile (an error reaches the window) and the thread ends when asked",
+      "error" in kinds and "reading" in kinds and not still)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
