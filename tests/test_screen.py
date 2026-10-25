@@ -855,6 +855,133 @@ finally:
     m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
     m.tesseract_candidates, m.read_map_name = real_candidates, real_map
 
+# ---- A01: every reading part, failing with every kind of error, never costs the EXP reading
+class Custom(Exception):
+    pass
+
+
+def raising(exc):
+    def boom(*a, **k):
+        raise exc
+    return boom
+
+
+
+
+
+def matrix_reader(part):
+    """A reader set up so that `part` runs at every look (and the bar is read cleanly), plus how to make it raise."""
+    bar = percent_only(frame) if part == "level" else frame     # (the level is only read when the bar shows just a percentage)
+    scene = np.full((720, 1280, 3), 25, np.uint8)               # (room around the bar for the class, name and level)
+    scene[720 - bar.shape[0] - 6:720 - 6, 400:400 + bar.shape[1]] = bar
+    screen, size = FakeScreen(scene), (1280, 720)
+    r = part_reader(templates=part != "Tesseract")
+    r._game_rect = lambda: (0, 0) + size
+    r.read(screen)                                      # (the first look finds the bar)
+    r.next_job_read = r.next_name_read = r.next_level_read = r.next_scan = 0.0
+    if part == "map name":
+        r.map_box, r.map_unread, r.next_map_read = (0, 0, 120, 30), True, 0.0
+    return r, screen
+
+
+def patch_part(part, r, exc):
+    """Makes the part's own reader raise `exc`; returns what to undo."""
+    boom = raising(exc)
+    if part == "map name":
+        return [(m, "read_map_name", boom)]
+    if part == "class":
+        return [(m, "read_job", boom)]
+    if part == "name print":
+        return [(level_ocr, "name_print", boom)]
+    if part == "level":
+        return [(level_ocr, "read_level", boom)]
+    if part == "window scan":
+        return [(m, "find_party_bars", boom)]
+    if part == "Tesseract":
+        return [(m, "tesseract_candidates", boom)]
+    if part == "mesos":
+        return [(r, "_read_mesos", boom)]
+    return [(r, "_read_potion_bar", boom)]
+
+
+def rearm(part, r):
+    """Makes the part due again (its own timers would otherwise skip it)."""
+    r.next_job_read = r.next_name_read = r.next_level_read = r.next_scan = r.next_bar = 0.0
+    if part == "map name":
+        r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
+    if part == "mesos":
+        r.mesos_box = (10, 10, 100, 12)
+        r.next_scan = float("inf")
+
+
+def has_exp(part, got):
+    if part == "Tesseract":                 # (no templates: the bar is unsure by design; the look must still come back)
+        return bool(got.where)
+    if part == "level":
+        return got.percent_only and got.confident
+    return got.confident and bool(got.candidates)
+
+real_monotonic, real_tess, real_ok = m.time.monotonic, m.TESS, m.tesseract_ok
+m.time.monotonic = lambda: clock[0]
+m.TESS, m.tesseract_ok = Says("32"), True
+bad = []
+try:
+    for part in m.PART_NOTES:
+        for exc in (m.ocr.TesseractError("eng.traineddata is missing"), OSError("disk gone"), ValueError("odd"), Custom("mine")):
+            r, screen = matrix_reader(part)
+            undo = [(o, n, getattr(o, n)) for o, n, _ in patch_part(part, r, exc)]
+            for o, n, f in patch_part(part, r, exc):
+                setattr(o, n, f)
+            try:
+                log_before = m.ERROR_LOG_PATH.read_text() if m.ERROR_LOG_PATH.exists() else ""
+                notes, kept = [], True
+                for _ in range(4):
+                    rearm(part, r)
+                    clock[0] += 1.5
+                    got = r.read(screen)
+                    kept = kept and has_exp(part, got)
+                    notes.append(got.note or "")
+                entries = m.ERROR_LOG_PATH.read_text()[len(log_before):].count(f"reading the {part} failed")
+                said = m.PART_NOTES[part] in notes[0]
+                counted = r.part_errors[part] >= 4 and r.error_types[type(exc).__name__] >= 4
+                if not (kept and said and counted and entries == 1):
+                    bad.append(f"{part}/{type(exc).__name__}: exp={kept} note={said} counted={r.part_errors[part]} log={entries}")
+                clock[0] += m.PART_LOG_SECONDS + 1
+                rearm(part, r)
+                log_mid = m.ERROR_LOG_PATH.read_text()
+                r.read(screen)
+                again = m.ERROR_LOG_PATH.read_text()[len(log_mid):].count(f"reading the {part} failed")
+                if again != 1:
+                    bad.append(f"{part}/{type(exc).__name__}: after 10 minutes the log got {again} entries")
+            finally:
+                for o, n, f in undo:
+                    setattr(o, n, f)
+finally:
+    m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
+check(f"every reading part x TesseractError/OSError/ValueError/custom: the EXP still reads, the part is counted, noted, and "
+      f"written to errors.log once per 10 minutes ({len(m.PART_NOTES) * 4} cases{': ' + '; '.join(bad[:6]) if bad else ''})", not bad)
+
+
+# ---- a failed part's note stays for PART_NOTE_SECONDS, also on the looks where the part isn't due again yet
+m.time.monotonic = lambda: clock[0]
+m.TESS, m.tesseract_ok = Says("32"), True
+try:
+    for part, patched, word in (("map name", (m, "read_map_name"), "Map names"), ("name print", (level_ocr, "name_print"), "Telling characters")):
+        r, screen = matrix_reader(part)
+        real_fn = getattr(*patched)
+        setattr(*patched, raising(OSError("gone")))
+        seen = []
+        try:
+            for _ in range(4):                     # (the part fails at the first look; its next try is 5 s away)
+                clock[0] += 1.5
+                seen.append(word in (r.read(screen).note or ""))
+        finally:
+            setattr(*patched, real_fn)
+        check(f"a failed {part} keeps its status note on the looks before it is due again ({seen})", all(seen))
+finally:
+    m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
+
+
 # ---- health reports count each look once, by what happened to the EXP bar (exp_kind), and note which other readers tried
 def kind_of_look(templates=True, tesseract=None, setup=None):
     r = part_reader(templates)
