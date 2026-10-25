@@ -312,7 +312,11 @@ def locate_tesseract():
     global tesseract_where
     state, why, seen = "missing", "", None
     for p in PLATFORM.tesseract_candidates(HOME_DIR, APP_DIR):
-        if not (p.is_file() and os.access(p, os.X_OK)):
+        try:
+            usable = p.is_file() and os.access(p, os.X_OK)
+        except OSError:                     # (a folder in PATH we aren't allowed into: not a program we can use)
+            usable = False
+        if not usable:
             continue
         state = "no_eng"
         for folder in PLATFORM.tessdata_candidates(p):
@@ -1760,17 +1764,17 @@ class ScreenReader:
     @contextlib.contextmanager
     def _part(self, part):
         """One part of a look (map name, mesos, ...): if it raises, that part counts as not read this look
-        and the others carry on."""
-        before = self.part_failed_at.get(part)
+        and the others carry on. A part that really ran and worked says so with _part_ok (one that wasn't due
+        yet proves nothing, so a failure's status note stays its PART_NOTE_SECONDS)."""
         try:
             yield
         except Exception as e:
             self._part_failed(part, e)
             if part in TRIED_PARTS:
                 self._tried(TRIED_PARTS[part], False)
-        else:
-            if self.part_failed_at.get(part) == before:     # (unless the part caught a failure itself)
-                self.part_failed_at.pop(part, None)
+
+    def _part_ok(self, part):
+        self.part_failed_at.pop(part, None)
 
     def _tried(self, part, worked):
         """Notes that a reader tried during this look (map, class, level, mesos, potions), for health reports."""
@@ -1920,7 +1924,9 @@ class ScreenReader:
             return
         shot = capture.grab(x0, y0, w, h)
         look = {}
+        self.next_job_read = now + 10         # (kept if the read raises: it isn't started again at every look)
         job = read_job(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, look) if shot else None
+        self._part_ok("class")
         self.job_look = look or None
         self._tried("class", job)
         if job:
@@ -1944,6 +1950,7 @@ class ScreenReader:
             return
         shot = capture.grab(x0, y0, w, h)
         self.name_print = level_ocr.name_print(shot[0], wx + ax - shot[1], wy + ay - shot[2], g) if shot else None
+        self._part_ok("name print")
 
     def recheck_level(self):
         """Read the badge at the next look (the % wrapped: the level may have gone up). The level known so
@@ -1979,6 +1986,8 @@ class ScreenReader:
             look["why"] = f"the level read failed: {e}"
             self._part_failed("level", e)
             seen = None
+        else:
+            self._part_ok("level")
         self.level_look = look
         self._tried("level", seen is not None)
         if seen is None:
@@ -2176,6 +2185,7 @@ class ScreenReader:
         cands = [got] if got else []
         with self._part("Tesseract"):           # (the backup failing leaves the template reading standing)
             cands += [c for c in tesseract_candidates(img, lay) if c != got]
+            self._part_ok("Tesseract")
         cands.sort(key=lambda c: not fits_exp_table(*c))
         if cands:
             e, p = cands[0]
@@ -2262,6 +2272,7 @@ class ScreenReader:
                             # around them) must be clear of this window.
                             self.party_area = (sx + x0 - int(g), sy + y0 - int(g),
                                                x1 - x0 + int(2 * g), y1 - y0 + int(2 * g))
+                self._part_ok("window scan")
         mesos, image, boxes = None, None, ()
         self.mesos_covered = False
         if self.mesos_box:
@@ -2273,6 +2284,7 @@ class ScreenReader:
             else:
                 with self._part("mesos"):
                     mesos, image, boxes = self._read_mesos(capture, wx + bx, wy + by, bw, bh)
+                    self._part_ok("mesos")
                     self._tried("mesos", mesos is not None)
         window = self.window if now <= self.window_until else None
         if window:
@@ -2282,6 +2294,7 @@ class ScreenReader:
             with self._part("potions"):
                 bar = self._read_potion_bar(capture, rect, notes)
                 if bar is not None:
+                    self._part_ok("potions")
                     self._tried("potions", bool(bar))
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
                                 mesos_at=moved, window=window, bar=bar, note=" ".join(notes) or None)
@@ -2439,6 +2452,7 @@ class ScreenReader:
                     elif self.map_unread and now >= self.next_map_read:
                         with self._part("map name"):
                             name = read_map_name(shot[0], g)
+                            self._part_ok("map name")
                             self._tried("map", name is not None)
                         self.map_look = {"image": shot[0], "text": name}
                         self.map_unread = name is None
@@ -6293,7 +6307,11 @@ def main():
         return
     PLATFORM.ask_permissions()
     move_old_data()
-    tess, tessdata, tesseract_state, tesseract_why = locate_tesseract()
+    try:
+        tess, tessdata, tesseract_state, tesseract_why = locate_tesseract()
+    except Exception as e:                  # (EXP and mesos work without Tesseract: never a reason not to start)
+        log_error("looking for Tesseract", e)
+        tess = None
     if tess:
         TESS = ocr.Tesseract(tess, tessdata=tessdata or None)
         tesseract_ok = True

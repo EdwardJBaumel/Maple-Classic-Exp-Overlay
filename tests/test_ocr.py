@@ -8,6 +8,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 os.environ["MAPLE_EXP_DATA"] = tempfile.mkdtemp()           # never touch your real data
@@ -65,6 +66,51 @@ except ocr.TesseractError as e:
     check("a failing Tesseract is an error that says why", "data file" in str(e))
 n = len(calls)
 check("no pictures means no run", t.read_lines([]) == [] and len(calls) == n)
+
+# a Tesseract that hangs ends each run at the timeout: the wait is paid once, then it is left alone for a while
+# (every look asks for it: the class, the map name, the badge; 30 s each would freeze the whole reading)
+clock = [1000.0]
+real_monotonic = time.monotonic
+time.monotonic = lambda: clock[0]
+hang_runs = []
+
+
+def hangs(args, **kw):
+    hang_runs.append(kw["timeout"])
+    raise subprocess.TimeoutExpired(args, kw["timeout"])
+
+
+def asks(h):
+    try:
+        return h.read_lines(two)
+    except ocr.TesseractError as e:
+        return str(e)
+    except Exception as e:
+        return type(e).__name__
+
+
+try:
+    ocr.subprocess.run = hangs
+    h = ocr.Tesseract(r"C:\somewhere\tesseract.exe", timeout=30)
+    got = asks(h)
+    check(f"a run that times out is a TesseractError saying so ({got})", "30" in got and len(hang_runs) == 1)
+    for _ in range(5):
+        clock[0] += 10
+        asks(h)
+    check(f"...and for the next minute Tesseract isn't started again ({len(hang_runs)} run in 50 s)", len(hang_runs) == 1)
+    clock[0] += 20
+    asks(h)
+    check("...then it gets another try", len(hang_runs) == 2)
+    ocr.subprocess.run = fake_run("12\r\n\f34\r\n")
+    clock[0] += 61
+    check("...and once a run works it is used as usual", [x.strip() for x in h.read_lines(two)] == ["12", "34"])
+    ocr.subprocess.run = hangs
+    clock[0] += 1
+    asks(h)
+    check("...a fresh hang pauses it again", len(hang_runs) == 3)
+finally:
+    time.monotonic = real_monotonic
+ocr.subprocess.run = real_run
 ocr.subprocess.run = real_run
 
 # ---- with the real Tesseract: one run for many pictures gives the same text as one run each
@@ -170,6 +216,34 @@ finally:
     m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
     m.tesseract_state, m.tesseract_why = "missing", ""
 
+# a program Windows won't let us look at (a PATH folder we have no access to) is skipped, not a crash at start-up
+class Locked:
+    def is_file(self):
+        raise PermissionError(13, "Access is denied")
+
+
+try:
+    base2 = Path(tempfile.mkdtemp())
+    good2 = fake_install(base2 / "good", big)
+    m.PLATFORM.tessdata_candidates = lambda exe: [exe.parent / "tessdata"]
+    m.PLATFORM.tessdata_arg = lambda exe, folder: str(folder)
+    m.PLATFORM.tesseract_candidates = lambda home, app: [Locked(), good2]
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        check("a candidate that can't be looked at is skipped for the next good one", exe == str(good2) and state == "ok")
+    except Exception as e:
+        check(f"a candidate that can't be looked at is skipped for the next good one (it raised {type(e).__name__})", False)
+    m.PLATFORM.tesseract_candidates = lambda home, app: [Locked()]
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        check("...and when it is the only one there is no Tesseract (missing), not a crash", exe is None and state == "missing")
+    except Exception as e:
+        check(f"...and when it is the only one there is no Tesseract (it raised {type(e).__name__})", False)
+finally:
+    del m.PLATFORM.tessdata_arg
+    m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+    m.tesseract_state, m.tesseract_why = "missing", ""
+
 # --tessdata-dir is passed, and a TESSDATA_PREFIX of ours can't redirect it
 os.environ["TESSDATA_PREFIX"] = r"C:\wrong\place"
 try:
@@ -216,6 +290,51 @@ if real_exe:
         m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
         m.tesseract_state, m.tesseract_why = "missing", ""
 
+# Windows: a data folder under letters outside the PC's code page needs its 8.3 short name; without one it is refused
+# (a fake eng.traineddata is enough: the choice is made before Tesseract is ever started)
+if sys.platform == "win32":
+    import ctypes
+    kernel = ctypes.windll.kernel32
+    odd_root = Path(tempfile.mkdtemp()) / "Привет 名前"
+    (odd_root / "tessdata").mkdir(parents=True)
+    (odd_root / "tessdata" / "eng.traineddata").write_bytes(big)
+    odd_exe = odd_root / "tesseract.exe"
+    odd_exe.write_bytes(b"")
+    saved_cands, saved_data = m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates
+    m.PLATFORM.tesseract_candidates = lambda home, app: [odd_exe]
+    probe = ctypes.create_unicode_buffer(1024)
+    has_short = kernel.GetShortPathNameW(str(odd_root / "tessdata"), probe, 1024) > 0 and probe.value != str(odd_root / "tessdata")
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        if has_short:
+            check("odd letters, 8.3 names on: the data folder is handed over by a short name that only has code-page letters",
+                  state == "ok" and arg and arg != str(odd_root / "tessdata") and arg.encode("mbcs").decode("mbcs") == arg
+                  and (Path(arg) / "eng.traineddata").is_file())
+        else:
+            print("     (this PC has no 8.3 names for that folder: the short-name case is only tested with a fake answer)")
+
+        def short_name(answer):
+            def fake(path, buf, size):
+                if answer:
+                    buf.value = answer if answer != "same" else path
+                    return len(buf.value)
+                return 0
+            return fake
+
+        for what, answer in (("8.3 names switched off (the long name comes back)", "same"), ("the call failing", "")):
+            kernel.GetShortPathNameW = short_name(answer)
+            try:
+                exe, arg, state, why = m.locate_tesseract()
+            finally:
+                del kernel.GetShortPathNameW
+            m.tesseract_state, m.tesseract_why = state, why
+            check(f"odd letters and {what}: no Tesseract, state no_eng, the path reason, and the player is told to move the folder",
+                  exe is None and state == "no_eng" and why == "path" and "unusual characters" in m.tesseract_note())
+        check("...the real call is back afterwards", kernel.GetShortPathNameW is not None and not hasattr(kernel.GetShortPathNameW, "__code__"))
+    finally:
+        m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+        m.tesseract_state, m.tesseract_why = "missing", ""
+
 # macOS rules, run on any OS: the methods are cut out of platforms/macos.py (it can only be imported on a Mac)
 tree = ast.parse((Path(m.__file__).parent / "platforms" / "macos.py").read_text(encoding="utf-8"))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MacPlatform")
@@ -230,6 +349,13 @@ check("macOS looks next to the program (Homebrew layout) first, then in Homebrew
 check("macOS passes --tessdata-dir only for a folder that isn't Tesseract's own default",
       mac.tessdata_arg(brew, Path("/opt/homebrew/share/tessdata")) == ""
       and Path(mac.tessdata_arg(brew, Path("/usr/local/share/tessdata"))).as_posix() == "/usr/local/share/tessdata")
+cellar = Path("/opt/homebrew/Cellar/tesseract/5.5.0/bin/tesseract")      # (a versioned Homebrew folder, if that is the program found)
+check("macOS: a program inside a versioned Cellar folder looks in that version's own share/tessdata first, passing nothing",
+      mac.tessdata_candidates(cellar)[0].as_posix() == "/opt/homebrew/Cellar/tesseract/5.5.0/share/tessdata"
+      and mac.tessdata_arg(cellar, mac.tessdata_candidates(cellar)[0]) == "")
+macports = Path("/opt/local/bin/tesseract")
+check("macOS: MacPorts' program finds /opt/local/share/tessdata beside it",
+      mac.tessdata_candidates(macports)[0].as_posix() == "/opt/local/share/tessdata")
 
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
