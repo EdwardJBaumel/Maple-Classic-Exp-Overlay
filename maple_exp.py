@@ -2091,7 +2091,8 @@ class ScreenReader:
                 return Reading("This window is covering the EXP bar. Move it.", exp_kind="covered")
             shot = capture.grab(wx + bx, wy + by, bw, bh)
             reading, lay = self._read(shot, where)
-            reading = self._shadow_look(capture, rect, shot, reading, lay, started)
+            if reading.confident or self.misses < 2:        # (the 3rd miss searches again below: that look is the one handed on)
+                reading = self._shadow_look(capture, rect, shot, reading, lay, started)
             if reading.confident:
                 self.misses = 0
                 self._remember(lay, rect, shot)

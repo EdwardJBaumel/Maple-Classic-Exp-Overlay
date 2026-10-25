@@ -1421,6 +1421,55 @@ check("shadow: a disagreement keeps the EXP bar crop and shows up in the bug rep
       got.shadow[0] == "disagree" and len(dis.shadow.kept) == 1 and dis.shadow.kept[0]["image"].size > 0 and facts["diffs"]
       and "Disagreed" in "\n".join(report.shadow_lines(facts)) and "1,234 [12.34%]" in "\n".join(report.shadow_lines(facts)))
 check("shadow: the details text has the 'Reader v2 (test)' part", "== Reader v2 (test) ==" in report.details({"shadow": facts}))
+
+# ---- shadow mode, audit A03: the counts add up, v2's own grab is timed, an idle v2 grabs nothing
+import threading  # noqa: E402
+import time as real_time  # noqa: E402
+CAT = shadow_mod.CATEGORIES
+full = cv2.imread(str(FRAMES / "exp_full-1920x1080.png"))
+
+
+class SlowScreen(FakeScreen):
+    """Every grab takes `lag` seconds (a real screen grab costs time); remembers what was grabbed."""
+    def __init__(self, image, lag=0.0):
+        super().__init__(image)
+        self.lag, self.grabbed = lag, []
+
+    def grab(self, r):
+        self.grabbed.append((r["left"], r["top"], r["width"], r["height"]))
+        real_time.sleep(self.lag)
+        return super().grab(r)
+
+
+def full_reader(on=True):
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, full.shape[1], full.shape[0])
+    r.shadow.on = on
+    return r
+
+
+# a bar that goes dull for good: the 3rd unclear look makes today's reader search again, and the Reading handed
+# on must carry the one shadow look of that call (and its counts match what health reports count from Readings)
+dull = FakeScreen(np.full_like(full, 40))
+seq = full_reader()
+reads = [seq.read(FakeScreen(full)) for _ in range(3)] + [seq.read(dull) for _ in range(6)]
+check("shadow counts: every shadow look is in exactly one Reading (a bar that goes dull, 9 looks)",
+      sum(seq.shadow.counts[k] for k in CAT) == sum(1 for x in reads if x.shadow) and reads[0].shadow and reads[4].shadow)
+check("shadow counts: ...and the sum of the categories is the number of runs + skipped + errors",
+      sum(seq.shadow.counts[k] for k in CAT) == seq.shadow.counts["runs"] + seq.shadow.counts["skipped"] + seq.shadow.counts["errors"])
+
+# the rules, with many mixed looks: every look that ran is in exactly one category
+mix = shadow_unit(GOOD)
+mix.fits = lambda e, p: True
+rr = random.Random(7)
+results = []
+for i in range(300):
+    mix.read = lambda font, lay, v=rr.choice([GOOD, OTHER, None, (None, 71.68), (None, 5.0)]): v
+    result = mix.look(img, rr.choice([GOOD, None, OTHER, (None, 71.68)]), 5.0, LAY)
+    results.append(result)
+check("shadow counts: 300 mixed looks are counted exactly once each",
+      sum(mix.counts[k] for k in CAT) == 300 == sum(1 for x in results if x is not None)
+      and all(x.category == "skipped" or mix.counts[x.category] > 0 for x in results))
 m.TESS, m.tesseract_ok = before_tess
 
 # ---- reader v2 on bars drawn from the font itself (exact truth), including ones with a digit lost
