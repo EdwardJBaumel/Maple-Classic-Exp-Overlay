@@ -5229,13 +5229,16 @@ class App:
     def _count_health(self, r, now):
         """Counts one look in today's health record. Runs on the main thread, once per Reading, so the
         categories always add up to the number of looks."""
-        last, self._health_at = self._health_at, now
-        rect, gh = self.reader.last_rect, self.reader.gh
-        game = None
-        if rect and gh:
-            game = (rect[2], rect[3], any(rect[2] == w and rect[3] == h for w, h, _ in self._health_monitors), gh)
-        self.healthlog.look(healthlog.kind_of(r), r.percent_only, r.tries, r.ms,
-                            (now - last) if last is not None and self.tracker.running else 0.0, game, r.shadow)
+        try:
+            last, self._health_at = self._health_at, now
+            rect, gh = self.reader.last_rect, self.reader.gh
+            game = None
+            if rect and gh:
+                game = (rect[2], rect[3], any(rect[2] == w and rect[3] == h for w, h, _ in self._health_monitors), gh)
+            self.healthlog.look(healthlog.kind_of(r), r.percent_only, r.tries, r.ms,
+                                (now - last) if last is not None and self.tracker.running else 0.0, game, r.shadow)
+        except Exception as e:                      # (counting must never keep a reading from being handled)
+            log_error("counting a look for the health report", e)
 
     def _health_snapshot(self):
         """What the setup is like today (recorded while the game is there, not when the report is sent)."""
