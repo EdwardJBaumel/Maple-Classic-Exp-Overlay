@@ -270,7 +270,7 @@ def load_config():
               "exp_v2_spots": good_v2_spots,                  # (where reader v2 found the bar, by window size)
               "reports_sent": lambda v: isinstance(v, dict) and isinstance(v.get("day"), str) and type(v.get("n")) is int and v["n"] >= 0}
     for key, ok in checks.items():
-        if key in cfg and cfg[key] is not None and not ok(cfg[key]):
+        if key in cfg and not (cfg[key] is None and key == "log_size") and not ok(cfg[key]):    # (a null log_size is saved on purpose)
             del cfg[key]
     if cfg.get("mode") == "region" and not cfg.get("region"):
         cfg["mode"] = "window"
