@@ -1245,5 +1245,47 @@ for x in range(0, bar.shape[1] - 30, 6):
             lost.append((x, wd, got))
 check(f"a %-only bar with a strip over the first percentage digit is never read as another number {lost[:2]}", not lost)
 
+# hostile inputs: v2 gives a result or None, never raises, never a number that isn't the truth (fixed seed)
+fz = np.random.default_rng(5)
+fz_frame = cv2.imread(str(FRAMES / "exp_win-1280x720.png"))
+fz_h, fz_w = fz_frame.shape[:2]
+fz_cases = {"1x1": np.zeros((1, 1, 3), np.uint8), "10x10000": fz.integers(0, 256, (10, 10000, 3), dtype=np.uint8),
+            "20000x10": fz.integers(0, 256, (20000, 10, 3), dtype=np.uint8), "all white": np.full((60, 400, 3), 255, np.uint8),
+            "noise": fz.integers(0, 256, (120, 600, 3), dtype=np.uint8), "mirrored": fz_frame[:, ::-1].copy(),
+            "two bars": np.vstack([fz_frame, fz_frame]), "gray 2-d": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2GRAY),
+            "gray 1 channel": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2GRAY)[:, :, None], "BGRA": cv2.cvtColor(fz_frame, cv2.COLOR_BGR2BGRA),
+            "not contiguous": np.asfortranarray(fz_frame), "a view": np.repeat(fz_frame, 2, axis=1)[:, ::2]}
+for cut in range(0, 40, 3):
+    fz_cases[f"cut left {cut}"], fz_cases[f"cut right {cut}"] = fz_frame[:, cut:], fz_frame[:, :fz_w - cut]
+    fz_cases[f"cut top {cut}"], fz_cases[f"cut bottom {cut}"] = fz_frame[cut:], fz_frame[:fz_h - cut]
+for x in range(0, fz_w, 7):
+    masked = fz_frame.copy()
+    masked[:, x:x + 5] = 0
+    fz_cases[f"strip at {x}"] = masked
+fz_bad, fz_raised = [], []
+for name, pic in fz_cases.items():
+    try:
+        lay = m.find_exp_v2(pic)
+        got = digits_v2.read_layout_v2(font, lay) if lay else None
+    except Exception as e:
+        fz_raised.append((name, repr(e)))
+        continue
+    if got not in (None, (68601, 71.68)):
+        fz_bad.append((name, got))
+for hint in ((-100, -100, 5, 5), (10 ** 9, 10 ** 9, 10 ** 9 + 50, 10 ** 9 + 50), (50, 50, 10, 10), (-1e9, -1e9, 1e9, 1e9), (float("nan"), 0, 10, 10),
+             (0, 0, float("inf"), float("inf")), "garbage", (1, 2, 3), (3.7, 2.2, fz_w - 1.5, fz_h - 0.4)):
+    try:
+        lay = m.find_exp_v2(fz_frame, hint)
+        got = digits_v2.read_layout_v2(font, lay) if lay else None
+    except Exception as e:
+        fz_raised.append((f"hint {hint!r}", repr(e)))
+        continue
+    if got not in (None, (68601, 71.68)):
+        fz_bad.append((f"hint {hint!r}", got))
+check(f"v2 on {len(fz_cases) + 9} hostile pictures and hints: never raises {fz_raised[:3]}", not fz_raised)
+check(f"...and never gives a number that isn't the truth {fz_bad[:3]}", not fz_bad)
+check("...a plain grayscale or BGRA copy of the bar reads like the colour one",
+      all(read_v2(fz_cases[k]) == (68601, 71.68) for k in ("gray 2-d", "gray 1 channel", "BGRA", "not contiguous", "a view")))
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

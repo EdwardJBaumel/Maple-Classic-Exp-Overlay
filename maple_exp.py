@@ -709,10 +709,21 @@ def find_exp_v2(bgr, hint=None):
     """Locate the EXP text in a screenshot by shape and contrast, not colour. Returns a Layout
     (the same as find_exp) or None. hint is a box (x0, y0, x1, y1) where the bar was last seen: it
     is searched first (the Layout's box and cy say where it was found, to remember for next time)."""
+    if bgr.size == 0:
+        return None
+    if bgr.ndim == 2 or (bgr.ndim == 3 and bgr.shape[2] == 1):      # (a grey or BGRA picture is read like a BGR one)
+        bgr = cv2.cvtColor(bgr.reshape(bgr.shape[:2]), cv2.COLOR_GRAY2BGR)
+    elif bgr.ndim != 3 or bgr.shape[2] < 3:
+        return None
+    elif bgr.shape[2] > 3:
+        bgr = bgr[:, :, :3]
     if hint is not None:
         H, W = bgr.shape[:2]
-        x0, y0, x1, y1 = hint
-        x0, y0, x1, y1 = max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1))
+        try:
+            x0, y0, x1, y1 = hint
+            x0, y0, x1, y1 = max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1))
+        except (TypeError, ValueError, OverflowError):              # (a garbled remembered spot is no spot)
+            x0 = y0 = x1 = y1 = 0
         if x1 - x0 > 8 and y1 - y0 > 8:
             lay = _find_exp_v2(bgr[y0:y1, x0:x1], W)
             if lay:
