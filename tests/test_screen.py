@@ -1009,6 +1009,28 @@ try:
 finally:
     m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
 
+# ---- _covered is v0.9.12's geometry, unchanged; _blocked is the same answer for a screen copy and never true for one that sees through windows
+def old_covered(own, x, y, w, h, margin=0):
+    r = own
+    return bool(r) and (x - margin < r[0] + r[2] and r[0] < x + w + margin
+                        and y - margin < r[1] + r[3] and r[1] < y + h + margin)
+
+
+rr = random.Random(7)
+cover_bad = []
+screen_reader, glass_reader = part_reader(), part_reader()
+glass_reader.capture = SeeThrough(None)
+for _ in range(4000):
+    own = rr.choice([None, (rr.randint(-50, 400), rr.randint(-50, 300), rr.randint(0, 300), rr.randint(0, 300))])
+    area = (rr.randint(-50, 500), rr.randint(-50, 400), rr.randint(0, 200), rr.randint(0, 200), rr.choice([0, 0, 2, 7]))
+    screen_reader.own_rect = glass_reader.own_rect = own
+    want = old_covered(own, *area[:4], margin=area[4])
+    if (screen_reader._covered(*area[:4], margin=area[4]) != want or screen_reader._blocked(*area[:4], margin=area[4]) != want
+            or glass_reader._covered(*area[:4], margin=area[4]) != want or glass_reader._blocked(*area[:4], margin=area[4])):
+        cover_bad.append((own, area))
+check(f"_covered is the old overlap test and _blocked is the same for a screen copy, never true through windows (4000 random areas, {len(cover_bad)} differ)",
+      not cover_bad)
+
 # ---- health reports count each look once, by what happened to the EXP bar (exp_kind), and note which other readers tried
 def kind_of_look(templates=True, tesseract=None, setup=None):
     r = part_reader(templates)
