@@ -1287,5 +1287,13 @@ check(f"...and never gives a number that isn't the truth {fz_bad[:3]}", not fz_b
 check("...a plain grayscale or BGRA copy of the bar reads like the colour one",
       all(read_v2(fz_cases[k]) == (68601, 71.68) for k in ("gray 2-d", "gray 1 channel", "BGRA", "not contiguous", "a view")))
 
+# the whole-width search must find the bar whatever the window's width (the blur that tells text from background grows with it)
+wide_bar = cv2.imread(str(FRAMES / "exp_win-1024x768.png"))
+for scale, width in ((1.875, 2560), (1.875, 2500), (1.875, 1920), (2.8125, 3840), (3.75, 5120)):
+    bar = cv2.resize(wide_bar, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+    wide = np.full((317, width, 3), 30, np.uint8)
+    wide[15:15 + bar.shape[0], 12:12 + bar.shape[1]] = bar
+    check(f"a {scale}x bar in a strip {width} px wide is found and read", read_v2(wide) == (68601, 71.68))
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

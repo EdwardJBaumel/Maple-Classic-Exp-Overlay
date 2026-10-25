@@ -625,6 +625,7 @@ def find_exp(bgr):
 # before its "]" (HP and MP have "/").
 
 V2_TEXT = 0.12      # how far above its surroundings text must be (share of how bright the brightest text is)
+V2_PERCENT = 0.5    # how well a blob must match the game's "%" glyph (correlation) to be taken for one
 V2_FAINT = 0.07     # ...and for the thin, paler brackets
 
 
@@ -697,12 +698,21 @@ def _v2_merge_pieces(blobs, bh):
 
 
 def _v2_is_percent(hi, b):
-    """True if the blob looks like "%": ink in the top-left and bottom-right corners (a "/" has it the other way)."""
-    sub = hi[b.y:b.y + b.h, b.x:b.x + b.w]
-    h2, w2 = max(1, b.h // 2), max(1, b.w // 2)
-    tl, br = sub[:h2, :w2].sum(), sub[b.h - h2:, b.w - w2:].sum()
-    tr, bl = sub[:h2, b.w - w2:].sum(), sub[b.h - h2:, :w2].sum()
-    return tl + br > 1.1 * (tr + bl) and tl > 0 and br > 0
+    """True if the blob looks like "%": its text mask, squeezed to 7 x 7, matches the game's own "%" glyph
+    (a digit, "/" or a letter at that spot is far off: 0.1 or less against 0.75+ for a "%")."""
+    sub = hi[b.y:b.y + b.h, b.x:b.x + b.w].astype(np.float32)
+    if sub.size == 0:
+        return False
+    sub = cv2.resize(sub, (7, 7), interpolation=cv2.INTER_AREA).reshape(-1)
+    pct = _v2_percent_glyph().reshape(-1)
+    sub, pct = sub - sub.mean(), pct - pct.mean()
+    return float(sub @ pct) >= V2_PERCENT * max(float(np.linalg.norm(sub) * np.linalg.norm(pct)), 1e-6)
+
+
+def _v2_percent_glyph(_cache=[]):
+    if not _cache:
+        _cache.append(np.array(exp_font.load()["glyphs"]["%"]["rows"], np.float32))
+    return _cache[0]
 
 
 def find_exp_v2(bgr, hint=None):
