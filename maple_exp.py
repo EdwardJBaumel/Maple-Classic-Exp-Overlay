@@ -2112,7 +2112,8 @@ class ScreenReader:
                 return Reading("This window is covering the EXP bar. Move it.", exp_kind="covered")
             shot = capture.grab(wx + bx, wy + by, bw, bh)
             reading, lay = self._read(shot, where)
-            reading = self._shadow_look(capture, rect, shot, reading, lay, started)
+            if reading.confident or self.misses < 2:        # (the 3rd miss searches again below: that look is the one handed on)
+                reading = self._shadow_look(capture, rect, shot, reading, lay, started)
             if reading.confident:
                 self.misses = 0
                 self._remember(lay, rect, shot)
@@ -2159,39 +2160,44 @@ class ScreenReader:
         try:
             return self._shadow_look_v2(capture, rect, shot, reading, lay, started)
         except Exception as e:
-            self._part_failed("reader v2", e)
-            return reading
+            self.shadow.failed(e)           # (counted like any v2 error, and v2 rests a minute)
+            return reading._replace(shadow=("errors", None))
 
     def _shadow_look_v2(self, capture, rect, shot, reading, lay, started):
-        if not shot or not self.shadow.on:
+        if not shot or self.shadow.idle():
             return reading
         wx, wy, ww, wh = rect
         old_img, ox, oy = shot[0], shot[1] - wx, shot[2] - wy      # where this picture sits in the game window
         img = old_img
         key = f"{ww}x{wh}/{round(lay.gh) if lay else round(self.gh or 0)}"
         spot = self.v2_spot or self.saved_v2.get(key)
-        hint = None
+        hint, own = None, None
+        where = {"ox": ox, "oy": oy}                # where the picture v2 reads sits in the game window
         if spot:
             x0, y0, x1, y1 = max(0, spot[0]), max(0, spot[1]), min(ww, spot[2]), min(wh, spot[3])
             if x1 - x0 > 8 and y1 - y0 > 8:
                 if ox <= x0 and oy <= y0 and x1 <= ox + img.shape[1] and y1 <= oy + img.shape[0]:
                     hint = (x0 - ox, y0 - oy, x1 - ox, y1 - oy)       # the picture holds its spot
                 elif not self._blocked(wx + x0, wy + y0, x1 - x0, y1 - y0):
-                    own = self._hide_own(capture.grab(wx + x0, wy + y0, x1 - x0, y1 - y0))      # (a small crop of its own)
-                    if own:
+                    def own():                      # (a small crop of its own, grabbed only if v2 really runs)
+                        pic = self._hide_own(capture.grab(wx + x0, wy + y0, x1 - x0, y1 - y0))
+                        if not pic:
+                            return None
                         self.shadow.counts["grabs"] += 1
-                        img, ox, oy = own[0], own[1] - wx, own[2] - wy
+                        where["ox"], where["oy"] = pic[1] - wx, pic[2] - wy
+                        return pic[0]
         top = int(wh * (1 - SEARCH_STRIP))
 
         def strip():                                # (the bottom strip, if the picture didn't hold the bar)
             if self._blocked(wx, wy + top, ww, wh - top):
                 return None
             big = self._hide_own(capture.grab(wx, wy + top, ww, wh - top))
-            return (big[0], big[1] - wx - ox, big[2] - wy - oy) if big else None
+            return (big[0], big[1] - wx - where["ox"], big[2] - wy - where["oy"]) if big else None
 
         old = reading.candidates[0] if reading.confident and reading.candidates else None
-        small = img.shape[0] < wh - top or img.shape[1] < ww       # (a picture that already is the strip needs no other)
-        res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img)
+        small = own or img.shape[0] < wh - top or img.shape[1] < ww       # (a picture that already is the strip needs no other)
+        res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img, own)
+        ox, oy = where["ox"], where["oy"]
         if res is None:
             return reading
         at = None

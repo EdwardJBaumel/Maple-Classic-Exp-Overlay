@@ -1409,8 +1409,9 @@ check("shadow: v2 raising leaves today's reading as it was, counted as an error 
 glue, plain = shadow_reader(True), shadow_reader(False)
 glue.shadow.look = lambda *a, **k: 1 / 0               # (a failure in the code around v2, outside its own guard)
 got, want = glue.read(fscreen), plain.read(fscreen)
-check("shadow: a failure around v2 leaves today's reading exactly as it was, counted as a failed part",
-      got.confident and same_input(got, want) and got.shadow is None and glue.part_errors["reader v2"] == 1)
+check("shadow: a failure around v2 leaves today's reading exactly as it was, counted as a failed part and a shadow error, v2 rests",
+      got.confident and same_input(got, want) and got.shadow == ("errors", None) and glue.part_errors["reader v2"] == 1
+      and glue.shadow.counts["errors"] == 1 and glue.read(fscreen).shadow is None)
 
 dis = shadow_reader(True)
 dis.shadow.read = lambda font, lay: (1234, 12.34)
@@ -1421,6 +1422,131 @@ check("shadow: a disagreement keeps the EXP bar crop and shows up in the bug rep
       got.shadow[0] == "disagree" and len(dis.shadow.kept) == 1 and dis.shadow.kept[0]["image"].size > 0 and facts["diffs"]
       and "Disagreed" in "\n".join(report.shadow_lines(facts)) and "1,234 [12.34%]" in "\n".join(report.shadow_lines(facts)))
 check("shadow: the details text has the 'Reader v2 (test)' part", "== Reader v2 (test) ==" in report.details({"shadow": facts}))
+
+# ---- shadow mode, audit A03: the counts add up, v2's own grab is timed, an idle v2 grabs nothing
+import threading  # noqa: E402
+import time as real_time  # noqa: E402
+CAT = shadow_mod.CATEGORIES
+full = cv2.imread(str(FRAMES / "exp_full-1920x1080.png"))
+
+
+class SlowScreen(FakeScreen):
+    """Every grab takes `lag` seconds (a real screen grab costs time); remembers what was grabbed."""
+    def __init__(self, image, lag=0.0):
+        super().__init__(image)
+        self.lag, self.grabbed = lag, []
+
+    def grab(self, r):
+        self.grabbed.append((r["left"], r["top"], r["width"], r["height"]))
+        real_time.sleep(self.lag)
+        return super().grab(r)
+
+
+def full_reader(on=True):
+    r = part_reader()
+    r._game_rect = lambda: (0, 0, full.shape[1], full.shape[0])
+    r.shadow.on = on
+    return r
+
+
+# a bar that goes dull for good: the 3rd unclear look makes today's reader search again, and the Reading handed
+# on must carry the one shadow look of that call (and its counts match what health reports count from Readings)
+dull = FakeScreen(np.full_like(full, 40))
+seq = full_reader()
+reads = [seq.read(FakeScreen(full)) for _ in range(3)] + [seq.read(dull) for _ in range(6)]
+check("shadow counts: every shadow look is in exactly one Reading (a bar that goes dull, 9 looks)",
+      sum(seq.shadow.counts[k] for k in CAT) == sum(1 for x in reads if x.shadow) and reads[0].shadow and reads[4].shadow)
+check("shadow counts: ...and the sum of the categories is the number of runs + skipped + errors",
+      sum(seq.shadow.counts[k] for k in CAT) == seq.shadow.counts["runs"] + seq.shadow.counts["skipped"] + seq.shadow.counts["errors"])
+
+# the rules, with many mixed looks: every look that ran is in exactly one category
+mix = shadow_unit(GOOD)
+mix.fits = lambda e, p: True
+rr = random.Random(7)
+results = []
+for i in range(300):
+    mix.read = lambda font, lay, v=rr.choice([GOOD, OTHER, None, (None, 71.68), (None, 5.0)]): v
+    result = mix.look(img, rr.choice([GOOD, None, OTHER, (None, 71.68)]), 5.0, LAY)
+    results.append(result)
+check("shadow counts: 300 mixed looks are counted exactly once each",
+      sum(mix.counts[k] for k in CAT) == 300 == sum(1 for x in results if x is not None)
+      and all(x.category == "skipped" or mix.counts[x.category] > 0 for x in results))
+# v2's own small grab (the remembered spot is not inside the picture today's reader holds) is part of v2's time
+lag = 0.02
+slow = full_reader()
+scr = SlowScreen(full, lag)
+slow.read(scr)
+steady = [slow.read(scr) for _ in range(3)]
+check("shadow time: v2's own screen grab is counted in its milliseconds (grab 20 ms, v2 time >= 20)",
+      all(x.shadow and x.shadow[1] >= lag * 1000 * 0.9 for x in steady))
+
+# v2 that is off, paused, stopped or skipping this look grabs nothing
+for how in ("stopped", "paused", "skip"):
+    idle = full_reader()
+    scr = SlowScreen(full)
+    idle.read(scr)
+    if how == "stopped":
+        idle.shadow.stopped = True
+    elif how == "paused":
+        idle.shadow.pause_until = real_time.monotonic() + 100
+    else:
+        idle.shadow._allowed = lambda: False
+    scr.grabbed.clear()
+    got = idle.read(scr)
+    check(f"shadow: v2 {how} makes no screen grab of its own (only today's one)", len(scr.grabbed) == 1)
+off = full_reader(False)
+scr = SlowScreen(full)
+off.read(scr)
+scr.grabbed.clear()
+off.read(scr)
+check("shadow: shadow_reader false makes no screen grab of its own", len(scr.grabbed) == 1 and not any(off.shadow.counts.values()))
+
+# a failure in the glue around v2 (its own grab raising) is counted as a shadow error and pauses v2 like any other
+boom = full_reader()
+boom_scr = SlowScreen(full)
+boom.read(boom_scr)
+real_grab = boom_scr.grab
+
+
+def grab_fails_for_small(r):
+    if (r["left"], r["top"], r["width"], r["height"]) != tuple(boom.box):
+        raise OSError("grab failed")
+    return real_grab(r)
+
+
+boom_scr.grab = grab_fails_for_small
+got = boom.read(boom_scr)
+check("shadow: v2's own grab raising is a counted shadow error, today's reading stays, v2 pauses",
+      got.confident and got.shadow and got.shadow[0] == "errors" and boom.shadow.counts["errors"] == 1
+      and boom.part_errors["reader v2"] == 1 and boom.read(boom_scr).shadow is None)
+
+# facts() for the bug report is read on the main thread while the reading thread adds looks
+race = shadow_unit(GOOD, cost_ms=0.0)
+race.fits = lambda e, p: True
+stop_flag = []
+
+
+def hammer():
+    while not stop_flag:
+        race.look(img, GOOD, 5.0)
+
+
+worker = threading.Thread(target=hammer)
+old_switch = sys.getswitchinterval()
+sys.setswitchinterval(1e-6)
+worker.start()
+race_error = None
+try:
+    for _ in range(3000):
+        race.facts()
+except Exception as e:
+    race_error = e
+finally:
+    stop_flag.append(1)
+    worker.join()
+    sys.setswitchinterval(old_switch)
+check(f"shadow: facts() for the bug report is safe while the reading thread adds looks ({race_error!r})", race_error is None)
+
 m.TESS, m.tesseract_ok = before_tess
 
 # ---- reader v2 on bars drawn from the font itself (exact truth), including ones with a digit lost

@@ -77,14 +77,27 @@ class Shadow:
             return self.flip
         return True
 
+    def idle(self):
+        """Is v2 switched off or resting after an error? (Then nothing of it runs and nothing is counted.)"""
+        return not self.on or time.monotonic() < self.pause_until
+
+    def failed(self, exc):
+        """Something went wrong around v2 (outside look): counted as an error look, v2 pauses, on_error hears of it."""
+        self.counts["errors"] += 1
+        self.pause_until = time.monotonic() + ERROR_PAUSE
+        self.on_error(exc)
+        return Result("errors", None, None, None)
+
     # ---- one look
-    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None):
+    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None):
         """Runs v2 on `img` (the picture today's reader just read) and compares. `old`: today's confident
         answer or None. `hint`: a box (x0, y0, x1, y1) in img where v2 saw the bar last time. `more()`: a
         bigger picture as (img, dx, dy) (the bottom strip, dx/dy where it starts relative to img) or None.
         `old_img`: the picture today's reader read, if v2 was given another (for the crop kept in a report).
+        `own()`: v2's own small picture (when `img` doesn't hold the remembered spot) or None; called only once v2
+        really runs, so a look v2 skips (off, paused, stopped, thinned) grabs nothing, and its time counts as v2's.
         Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused)."""
-        if not self.on or time.monotonic() < self.pause_until:
+        if self.idle():
             return None
         if not self._allowed():
             self.counts["skipped"] += 1
@@ -93,6 +106,10 @@ class Shadow:
         try:
             if self.font is None:
                 self.font = self.load_font()
+            if own is not None:
+                mine = own()
+                if mine is not None:
+                    img, hint = mine, None
             lay, dx, dy = self.find(img, hint), 0, 0
             if lay is None and more is not None and time.monotonic() - self.strip_at >= STRIP_SECONDS:
                 self.strip_at = time.monotonic()
@@ -143,9 +160,10 @@ class Shadow:
     # ---- for the bug report
     def facts(self):
         """The counts, the latest answers and the disagreements, as a plain dict (see report.details)."""
-        n = len(self.times)
+        times = list(self.times)            # (the reading thread adds to these while this runs on the main thread)
+        n = len(times)
         return {"on": self.on, "stopped": self.stopped, "thinned": self.thinned,
                 "counts": {k: self.counts[k] for k in CATEGORIES + ("grabs", "runs")},
-                "v2_ms": round(sum(t[1] for t in self.times) / n, 1) if n else None,
-                "old_ms": round(sum(t[0] for t in self.times) / n, 1) if n else None,
+                "v2_ms": round(sum(t[1] for t in times) / n, 1) if n else None,
+                "old_ms": round(sum(t[0] for t in times) / n, 1) if n else None,
                 "last": self.last, "diffs": list(self.diffs)}
