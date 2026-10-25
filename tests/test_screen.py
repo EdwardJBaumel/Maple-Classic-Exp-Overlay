@@ -636,6 +636,22 @@ for gh in (7, 11, 14, 22):
     check(f"...also when the text sits a pixel over, digits {gh} px ({', '.join(shifted) or 'all right'})", not shifted)
 check("a name row with no text (covered, empty) gives no print, and no print is never 'the same'",
       print_of(None) is None and not level_ocr.same_name(None, print_of("Fox")) and not level_ocr.same_name(None, None))
+# ---- A13-7: a name row that is partly covered is judged by what shows
+def covered(pr, left, right):
+    pr = pr.copy()
+    pr[:, int(left * pr.shape[1]):int(right * pr.shape[1])] = 0
+    return pr
+
+
+for gh in (11, 14):
+    bean, soy = print_of("beanguri", gh), print_of("soymiso", gh)
+    check(f"A13-7: the same name is 'same', nothing is 'hidden', digits {gh} px",
+          level_ocr.name_match(bean, print_of("beanguri", gh)) == "same" and level_ocr.name_match(bean, None) == "hidden")
+    got = [level_ocr.name_match(bean, covered(print_of("beanguri", gh), *c)) for c in ((0.5, 1.0), (0.0, 0.5), (0.3, 0.7))]
+    check(f"...the same name with part of it covered is 'alike' ({got})", got == ["alike"] * 3)
+    got = [level_ocr.name_match(bean, covered(soy, *c)) for c in ((0.5, 1.0), (0.0, 0.5), (0.3, 0.7))]
+    check(f"...another name with part of it covered is still 'different' ({got})", got == ["different"] * 3)
+    check("...and so is another name in full", level_ocr.name_match(bean, soy) == "different")
 check("a print is a small grid of numbers, not the picture or the text",
       print_of("Fox").shape == level_ocr.PRINT_SIZE[::-1] and print_of("Fox").dtype.kind == "f")
 

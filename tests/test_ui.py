@@ -1025,6 +1025,31 @@ app.reset()
 check(f"A13-10: 'Current' is only approximate while the bar shows only a % ({ascii(cur_exact)}, {ascii(cur_pct)})",
       cur_exact and not cur_exact.startswith(m.APPROX) and cur_pct.startswith(m.APPROX))
 
+# ---- A13-7: a covered name row says so; a partly covered one is judged by what shows
+def half(name):
+    pr = print_of(name).copy()
+    pr[:, pr.shape[1] // 2:] = 0
+    return pr
+
+
+start_pct()
+app.reader.name_print = print_of("beanguri")
+app._handle(pct_at(51.0))
+app.reader.name_print = None
+app._handle(pct_at(51.0))
+check(f"A13-7: nothing of the name showing says the name is covered, and keeps tracking ({app.status.get()!r})",
+      "covered" in app.status.get() and app.tracker.req == 95700)
+for _ in range(3):
+    app.reader.name_print = half("beanguri")
+    app._handle(pct_at(51.0))
+check(f"...half of the same name showing keeps the session and the level, and says so ({app.status.get()!r})",
+      app.tracker.req == 95700 and "hidden" in app.status.get() and app.other_char_at is None)
+for _ in range(3):
+    app.reader.name_print = half("soymiso")
+    app._handle(pct_at(51.0))
+check("...half of another name resets, as a clearly different character", app.tracker.req is None and app.other_char_at is not None)
+app.reset()
+
 # ---- Report a bug > Send to the developer
 def new_windows(before):
     return [c for c in app.root.winfo_children() if c not in before and c.winfo_class() == "Toplevel"]

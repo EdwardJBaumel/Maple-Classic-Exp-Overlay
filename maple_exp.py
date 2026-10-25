@@ -4186,6 +4186,7 @@ class App:
         self.pct_note = ""                  # what the tracker last said about a %-only reading
         self._char_print = None             # the name row's print when the level was last known (memory only)
         self._char_seen = None              # the newest print looked at, so each is counted once
+        self.name_note = ""                 # what to say about a covered or partly covered name row
         self._stale_level = None            # (level, when) of the character just left: a queued reading may still carry it
         self._char_diff = 0                 # prints in a row that differ from _char_print
         self._same_char = False             # the newest print matches the one from when the level was known
@@ -5585,6 +5586,8 @@ class App:
             status += "\nThe minimap's name is back."
         if self.note:
             status += f"\n{self.note}"
+        if r.percent_only and self.name_note:
+            status += f"\n{self.name_note}"
         if self.autolog.settle(now, self.tracker.running, **self.meso.for_log()):
             self.share_runs()                          # a finished run got its mesos (or went without)
         stale = self.meso.stale_note(now, self.tracker.running)       # (always asked, it keeps its own time)
@@ -5620,18 +5623,24 @@ class App:
 
     def _check_character(self):
         """Another character (its name row looks different) has its own level: start over for it. Only a
-        print that differs on two looks in a row counts, so something drawn over the name can't.
-        Returns True when it started over."""
+        print that differs on two looks in a row counts. A name row partly covered is judged by what shows:
+        the parts that show matching = the same character (kept, but said), not matching = another one.
+        Nothing showing = can't tell: it says so. Returns True when it started over."""
         cur = self.reader.name_print
         if cur is None:
             self._same_char = False
+            self.name_note = "The name under your character is covered, so it can't tell if it's the same character. Move what covers it."
             return False
         if cur is self._char_seen:
             return False
         self._char_seen = cur
-        if self._char_print is None or level_ocr.same_name(self._char_print, cur):
+        self.name_note = ""
+        match = "same" if self._char_print is None else level_ocr.name_match(self._char_print, cur)
+        if match in ("same", "alike"):
             self._same_char = self._char_print is not None
             self._char_print, self._char_diff = (cur if self._char_print is None else self._char_print), 0
+            if match == "alike":
+                self.name_note = "Part of the name is hidden. It still looks like the same character."
             return False
         self._same_char = False
         self._char_diff += 1
