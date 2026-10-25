@@ -877,5 +877,21 @@ if m.tesseract_ok:
     check("the real badge (Lv 32, a JPEG of the game at 1080p) reads as 32 with real Tesseract",
           level_ocr.read_level(game, 1052, 1044, 11.0, m.TESS, {}) == 32)
 
+# The game's own EXP-bar font and how it scales (exp_font.py, assets/exp_font.json)
+import exp_font  # noqa: E402
+font = exp_font.load()
+check("the EXP font has every glyph the bar uses", all(c in font["glyphs"] for c in "0123456789,.%[]")
+      and font["version"] == 1 and font["label"]["w"] > 0)
+pic, brackets = exp_font.canvas("12,345 [67.89%]")
+check("the sample text is 80 x 7 px at 1x, with its two brackets", pic.shape == (7, 80) and len(brackets) == 2 and pic.max() == 1)
+big = exp_font.render("12,345 [67.89%]", 2.0)
+check("...and 160 x 14 at 2x, smoothed (grey between black and white)", big.shape == (14, 160) and 0.1 < big.mean() < 0.5
+      and ((big > 0.05) & (big < 0.95)).any())
+check("the window scale is height / 768 (1 with UI Size Ideal)", exp_font.window_scale(1440) == 1.875
+      and exp_font.window_scale(1440, ideal=True) == 1.0)
+ox, oy = exp_font.text_origin(2560, 1440)
+check("the first digit of the bar lands where it was measured at 1440p (about 1403.7, 1387.5)",
+      abs(ox - 1403.65) < 0.3 and abs(oy - 1387.5) < 0.3)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
