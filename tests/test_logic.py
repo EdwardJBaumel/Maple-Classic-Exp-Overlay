@@ -1968,5 +1968,10 @@ check("500 errors of one kind with changing messages: one errors.log entry, one 
 m.log_error("reading the screen", OSError("other kind"))
 check("...an error of another kind is still written", len(m._last_errors) == 2)
 
+m._last_errors.clear()
+for i in range(50):
+    m.log_error(f"reading the mesos failed ({i} more failures skipped since the last entry)", ValueError("x"))
+check("...nor when what was being done carries a changing count (one remembered key)", len(m._last_errors) == 1)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

@@ -1060,9 +1060,12 @@ r = m.ScreenReader(m.DigitTemplates.load())
 check("health: a percentage-only bar is 'read' and says it is percentage-only",
       all((lambda g: g.exp_kind == "read" and g.percent_only)(r._read((percent_only(cv2.imread(str(f))), 0, 0), "game")[0])
           for f in sorted(FRAMES.glob("exp_*.png"))))
+real_find_game = m.PLATFORM.find_game_window
+m.PLATFORM.find_game_window = lambda: None          # (the game really running on this PC must not count here)
 r = part_reader()
 r.hwnd = None
 check("health: no game window is 'no_window'", r.read(fscreen).exp_kind == "no_window")
+m.PLATFORM.find_game_window = real_find_game
 r = m.ScreenReader(m.DigitTemplates.load())
 r.use_region(None)
 check("health: no selected area is 'no_window'", r.read(fscreen).exp_kind == "no_window")
@@ -1091,8 +1094,9 @@ r = part_reader()
 r.hwnd = None
 real_permission = m.PLATFORM.missing_permission
 m.PLATFORM.missing_permission = lambda: "Allow screen recording for this app."
+m.PLATFORM.find_game_window = lambda: None
 no_permission = r.read(fscreen)
-m.PLATFORM.missing_permission = real_permission
+m.PLATFORM.missing_permission, m.PLATFORM.find_game_window = real_permission, real_find_game
 check("health: a missing screen permission is 'no_window'", no_permission.exp_kind == "no_window")
 import healthlog  # noqa: E402
 looks = [kind_of_look(), kind_of_look(templates=False, tesseract=[]), kind_of_look(templates=False, tesseract=[(68601, 71.68)]),
@@ -1398,6 +1402,11 @@ try:
         raise ValueError("recheck")
     res = unit.look(img, GOOD, 5.0, LAY, own=lambda: pic, recheck=broken)
     check("shadow: ...a recheck that fails leaves the disagreement and is reported", res.category == "disagree" and len(errs) == 1)
+    unit = shadow_unit(GOOD)
+    unit.fits = lambda e, p: True
+    res = unit.look(img, None, 5.0, None, old_img=img, own=lambda: pic)
+    check("shadow: a v2-only look on v2's own picture keeps the crop of THAT picture (not today's, where v2's box isn't)",
+          res.category == "v2_only" and len(unit.kept) == 1 and unit.kept[0]["image"] is pic)
     unit = shadow_unit(GOOD)
     unit.on = False
     check("shadow: shadow_reader false runs nothing and counts nothing", unit.look(img, GOOD, 5.0) is None and not any(unit.counts.values()))

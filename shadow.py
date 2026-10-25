@@ -162,20 +162,21 @@ class Shadow:
         if kind == "disagree":
             self.diffs.append((old, got))
         if kind in ("disagree", "old_only", "v2_only"):
-            self._keep(kind, old, got, old_img if old_img is not None else img, old_lay, lay, dx, dy)
+            self._keep(kind, old, got, old_img if old_img is not None else img, old_lay, lay, dx, dy, img)
         spot = None
         if got is not None and lay is not None:
             g = lay.gh
             spot = (int(lay.box[0] - 6 * g) + dx, int(lay.cy - 2 * g) + dy, int(lay.box[2] + 3 * g) + dx, int(lay.cy + 2 * g) + dy)
         return Result(kind, ms, spot, got)
 
-    def _keep(self, kind, old, new, img, old_lay, lay, dx, dy):
-        """The EXP bar's crop (no class or name row), with both answers, for a bug report."""
+    def _keep(self, kind, old, new, img, old_lay, lay, dx, dy, v2_img):
+        """The EXP bar's crop (no class or name row), with both answers, for a bug report. `img` is today's picture,
+        `v2_img` the one v2 read (its own small grab, or the same)."""
         try:
             if old_lay is not None:
                 pic, boxes = self.view(img, old_lay)
             elif lay is not None and not (dx or dy):
-                pic, boxes = self.view(img, lay)
+                pic, boxes = self.view(v2_img, lay)
             else:
                 return
             self.kept.append({"kind": kind, "old": old, "v2": new, "image": pic, "boxes": boxes})

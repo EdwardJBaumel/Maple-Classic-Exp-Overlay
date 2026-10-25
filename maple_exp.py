@@ -212,7 +212,7 @@ def log_error(what, exc=None):
     once a minute), so players can send it in when something goes wrong. The kind is what was being
     done and the exception's type, not its message: a message with a number or a path in it would
     otherwise be written at every look and remembered for good."""
-    key = (what, type(exc).__name__ if exc is not None else None)
+    key = (re.sub(r"\d+", "#", what), type(exc).__name__ if exc is not None else None)   # (a count in `what` is the same kind)
     with _error_lock:
         now = time.monotonic()
         if now - _last_errors.get(key, -1e9) < 60:
