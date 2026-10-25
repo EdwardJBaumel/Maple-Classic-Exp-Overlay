@@ -32,11 +32,15 @@ def _hidden():
 
 
 class Tesseract:
-    """cmd: the full path of the tesseract program (never looked up on PATH or in this folder)."""
+    """cmd: the full path of the tesseract program (never looked up on PATH or in this folder).
+    tessdata: the folder with eng.traineddata, as Tesseract must be told it (see
+    Platform.tessdata_arg); then a TESSDATA_PREFIX left in the environment can't send it elsewhere."""
 
-    def __init__(self, cmd, timeout=30):
-        self.cmd, self.timeout = cmd, timeout
+    def __init__(self, cmd, timeout=30, tessdata=None):
+        self.cmd, self.timeout, self.tessdata = cmd, timeout, tessdata
         self.env = dict(os.environ, OMP_THREAD_LIMIT="1")
+        if tessdata:
+            self.env.pop("TESSDATA_PREFIX", None)
         self.runs = 0                                   # how many times Tesseract was started
 
     def read_lines(self, images, chars=None):
@@ -58,6 +62,8 @@ class Tesseract:
             # (run in that folder, with plain file names: Tesseract can't open a path with letters
             # outside the PC's ANSI code page, like a user name with accents)
             args = [self.cmd, "images.txt", "stdout", "--psm", "7"]
+            if self.tessdata:
+                args += ["--tessdata-dir", self.tessdata]
             if chars:
                 args += ["-c", f"tessedit_char_whitelist={chars}"]
             self.runs += 1

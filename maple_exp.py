@@ -185,6 +185,9 @@ EXP_TABLE = [
 
 tesseract_ok = False        # set in main(); Tesseract is only a fallback
 TESS = None                 # the ocr.Tesseract to read text with, once main() has found one
+tesseract_state = "missing"  # "ok", "missing" (no program found) or "no_eng" (a program, but no usable English file)
+tesseract_why = ""          # for "no_eng": "file" (eng.traineddata isn't there) or "path" (the folder's name can't be passed)
+tesseract_where = (None, None)   # the program and data folder in use (or the best one found), for bug reports
 
 
 # --------------------------------------------------------------------------- files
@@ -275,12 +278,57 @@ def move_old_data():
                 log_error(f"copying {name} from the program's folder", e)
 
 
+ENG_DATA_MIN = 1_000_000     # a real eng.traineddata is megabytes: anything smaller is cut off or empty
+
+
+def locate_tesseract():
+    """(program, data folder argument, state, why): the Tesseract that comes with the download,
+    else an installed one. A program counts only if it has a usable eng.traineddata: Tesseract
+    5 on Windows won't find it by itself when the folder's name has letters outside the PC's
+    code page, so the folder is always handed over (see Platform.tessdata_arg). Never a program
+    in the folder the overlay happens to be started from (Windows' usual search looks there
+    first, so a tesseract.exe someone left in, say, Downloads could be run)."""
+    global tesseract_where
+    state, why, seen = "missing", "", None
+    for p in PLATFORM.tesseract_candidates(HOME_DIR, APP_DIR):
+        if not (p.is_file() and os.access(p, os.X_OK)):
+            continue
+        state = "no_eng"
+        for folder in PLATFORM.tessdata_candidates(p):
+            try:
+                if (folder / "eng.traineddata").stat().st_size <= ENG_DATA_MIN:
+                    continue
+            except OSError:
+                continue
+            arg = PLATFORM.tessdata_arg(p, folder)
+            if arg is None:
+                why, seen = "path", seen or (p, folder)
+                continue
+            tesseract_where = (str(p), str(folder))
+            return str(p), arg, "ok", ""
+        seen = seen or (p, p.parent)
+    if seen:
+        tesseract_where = (str(seen[0]), str(seen[1]))
+    return None, "", state, why or ("file" if state == "no_eng" else "")
+
+
 def find_tesseract():
-    """The Tesseract that comes with the download, else an installed one. Never one in the
-    folder the overlay happens to be started from (Windows' usual search looks there first,
-    so a tesseract.exe someone left in, say, Downloads could be run)."""
-    return next((str(p) for p in PLATFORM.tesseract_candidates(HOME_DIR, APP_DIR)
-                 if p.is_file() and os.access(p, os.X_OK)), None)
+    """The Tesseract program to use, or None (see locate_tesseract)."""
+    return locate_tesseract()[0]
+
+
+def tesseract_note(what="Map names"):
+    """Why Tesseract can't be used, in the player's words ('' if it can)."""
+    if tesseract_state == "no_eng" and tesseract_why == "path":
+        return (f"{what} and your class can't be read from this folder because its name has unusual "
+                "characters. Move the overlay's folder to a simple place like C:\\Games\\. EXP and mesos still work.")
+    if tesseract_state == "no_eng":
+        return (f"{what} and your class can't be read: a file is missing from the overlay's folder "
+                "(tessdata\\eng.traineddata). Download the zip again and extract it. If it's still missing, "
+                "your antivirus may have removed it. EXP and mesos still work.")
+    if tesseract_state == "missing":
+        return f"{what} can't be read: Tesseract OCR is missing (see the README)."
+    return ""
 
 
 # --------------------------------------------------------------------------- updates
@@ -1530,7 +1578,10 @@ class ScreenReader:
     def _read_job(self, sct, rect):
         """Reads the class from the status bar now and then (it only changes at a job advance)."""
         now = time.monotonic()
-        if not tesseract_ok or now < self.next_job_read:
+        if not tesseract_ok:
+            self.job_look = {"image": None, "boxes": [], "why": tesseract_note("The class")}
+            return
+        if now < self.next_job_read:
             return
         wx, wy, _, _ = rect
         ax, ay = self.exp_anchor
@@ -1583,7 +1634,7 @@ class ScreenReader:
         x0, y0, w, h = wx + int(ax - 72 * g), wy + int(ay - 1.6 * g), int(34 * g) + 1, int(5.2 * g) + 1
         if not tesseract_ok or TESS is None:      # nothing to wait for: typing the level in is open at once
             self.level_failures = max(self.level_failures, LEVEL_FAILS_FOR_FALLBACK)
-            self.level_look = {"image": None, "votes": {}, "why": "Tesseract isn't available"}
+            self.level_look = {"image": None, "votes": {}, "why": tesseract_note("The level badge") or "Tesseract isn't available"}
             self.next_level_read = now + 60
             return
         if self._covered(x0, y0, w, h):
@@ -1942,7 +1993,7 @@ class ScreenReader:
     def _read_info(self, sct, rect):
         """Returns (map name if it was just read, note)."""
         if not tesseract_ok:
-            return None, "Map names can't be read: Tesseract OCR is missing (see the README)."
+            return None, tesseract_note()
         if self.own_rect is None:
             return None, None                   # wait until we know where this app's window is
         wx, wy, ww, wh = rect
@@ -5391,7 +5442,10 @@ class App:
             "dpi_awareness": PLATFORM.dpi_awareness(),
             "dpi": PLATFORM.screen_dpi(rect[0] + rect[2] // 2, rect[1] + rect[3] // 2) if rect else None,
             "tesseract": {"found": bool(tess), "version": tess.version() if tess else None,
-                          "where": ("included" if str(APP_DIR) in str(tess.cmd) else "installed") if tess else None},
+                          "where": ("included" if str(APP_DIR) in str(tess.cmd) else "installed") if tess else None,
+                          "state": tesseract_state, "why": tesseract_why or None,
+                          "exe": self._private(tesseract_where[0]) if tesseract_where[0] else None,
+                          "tessdata": self._private(tesseract_where[1]) if tesseract_where[1] else None},
             "game": {"mode": d["mode"], "found": d["found"], "rect": rect, "gh": d["gh"], "region": d["region"],
                      "minimized": bool(d["found"] and not rect and d["mode"] == "window"),
                      "fullscreen": bool(rect and any(rect[2] == mw and rect[3] == mh for mw, mh in monitors))},
@@ -5554,7 +5608,7 @@ class App:
 
 
 def main():
-    global tesseract_ok, TESS
+    global tesseract_ok, TESS, tesseract_state, tesseract_why
     # Only one copy at a time (per data folder): two copies would each keep their own log.
     # If it's already running, bring that window to the front instead. (The lock keeps the old
     # name, so an older version and this one can't run at the same time either.)
@@ -5563,9 +5617,9 @@ def main():
         return
     PLATFORM.ask_permissions()
     move_old_data()
-    tess = find_tesseract()
+    tess, tessdata, tesseract_state, tesseract_why = locate_tesseract()
     if tess:
-        TESS = ocr.Tesseract(tess)
+        TESS = ocr.Tesseract(tess, tessdata=tessdata or None)
         tesseract_ok = True
     root = tk.Tk()
     App(root, DigitTemplates.load())

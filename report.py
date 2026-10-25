@@ -72,7 +72,10 @@ def looks_wrong(f, now=None):
     over = f.get("overlay") or {}
     rd = f.get("reader") or {}
     h = f.get("health") or {}
-    if not t.get("found"):
+    if t.get("state") == "no_eng":
+        out.append("Tesseract has no usable English file (" + ("the folder's name has unusual characters"
+                   if t.get("why") == "path" else "tessdata\\eng.traineddata is missing") + "), so map names and the class can't be read.")
+    elif not t.get("found"):
         out.append("Tesseract wasn't found, so map names and the class can't be read.")
     if game.get("mode") == "window" and not game.get("found"):
         out.append("The MapleStory window wasn't found (is the game running, and not minimized?).")
@@ -171,6 +174,9 @@ def details(f):
             _kv("Windows scaling at the game", f"{round(f['dpi'] / 96 * 100)}%" if f.get("dpi") else "?"),
             _kv("Scaling awareness", f.get("dpi_awareness") or "?"),
             _kv("Tesseract", f"{t.get('where') or 'not found'}, {t.get('version') or 'version unknown'}"),
+            _kv("Tesseract state", f"{t.get('state') or '?'}{' (' + t['why'] + ')' if t.get('why') else ''}"),
+            _kv("Tesseract program", t.get("exe") or "none"),
+            _kv("Tesseract data folder", t.get("tessdata") or "none"),
             _kv("Overlay running for", clock(f.get("uptime_s") or 0)[1:]),
             _kv("Overlay CPU", f"{f.get('cpu_pct', '?')}% of one core since it started"), ""]
     out += ["== Game window ==",

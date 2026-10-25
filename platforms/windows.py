@@ -176,6 +176,27 @@ class WindowsPlatform(Platform):
             *on_path,
         ]
 
+    def tessdata_candidates(self, exe):
+        return [exe.parent / "tessdata"]
+
+    def tessdata_arg(self, exe, folder):
+        # Tesseract reads its arguments in the PC's ANSI code page: a folder with letters outside
+        # it (a Cyrillic or Chinese user name on a Western PC) must be given by its short 8.3 name.
+        path = str(folder)
+        try:
+            path.encode("mbcs")
+            return path
+        except UnicodeEncodeError:
+            pass
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(path, buf, len(buf))
+            short = buf.value
+            short.encode("mbcs")
+            return short or None
+        except Exception:
+            return None
+
     def claim_single_instance(self, key, title, old_titles=()):
         self._mutex = _CreateMutex(None, False, "Local\\MapleEXP-" + key)    # kept while it runs
         if ctypes.get_last_error() != 183:                                   # ERROR_ALREADY_EXISTS

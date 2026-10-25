@@ -125,6 +125,14 @@ class MacPlatform(Platform):
                 Path("/opt/homebrew/bin/tesseract"), Path("/usr/local/bin/tesseract"),      # Homebrew
                 Path("/opt/local/bin/tesseract"), *on_path]                                 # MacPorts
 
+    def tessdata_candidates(self, exe):
+        return [exe.parent.parent / "share" / "tessdata",            # Homebrew's and our own layout
+                Path("/opt/homebrew/share/tessdata"), Path("/usr/local/share/tessdata")]
+
+    def tessdata_arg(self, exe, folder):
+        # Tesseract's own default is <program>/../share/tessdata: only anything else is passed
+        return "" if folder == exe.parent.parent / "share" / "tessdata" else str(folder)
+
     def claim_single_instance(self, key, title, old_titles=()):
         self._lock = open(Path(tempfile.gettempdir()) / f"MapleEXP-{key}.lock", "w")   # macOS unlocks it at exit
         try:

@@ -184,6 +184,8 @@ Every version is tested against thousands of misread numbers, and against real s
 | View capture shows the wrong part of the screen | If the button says **Follow game**, click it. |
 | Mesos says "open inventory" | Open your inventory, and make sure the mesos at its bottom aren't hidden. In small game windows the chat bar can cover them, so drag the inventory up a bit. If it still doesn't show, stand still for a moment so the inventory stops being see-through. |
 | The log says "Map not read yet" | Make sure the minimap is open at the top left of the game, and the overlay isn't covering it. |
+| "...a file is missing from the overlay's folder (tessdata\eng.traineddata)" | Download the zip again and extract all of it. If the file is still missing, your antivirus may have removed it: allow the overlay's folder and extract again. EXP and mesos work without it. |
+| "...its name has unusual characters" | Move the overlay's folder to a simple place like C:\Games\ (no accents or non-English letters in the path). EXP and mesos work without it. |
 | The map name is wrong | Right-click the log line and choose **Rename map**. |
 | "This window is covering..." | Drag the overlay to another spot. |
 | Numbers stopped updating, or anything else | Please report it (see below). |
