@@ -469,6 +469,15 @@ check("...and not again", len(asked) == 1)
 app._health_tick()
 pump(0.6)
 check("answering No never sends anything", not posted and app.cfg["share_health"] is False)
+# a brand-new install (neither question answered yet): the runs question first, then the health one, each once
+app.cfg.pop("share_runs", None)
+app.cfg.pop("share_health", None)
+asked.clear()
+app._ask_to_share()
+app._ask_to_share()
+check("a new install is asked about sharing runs, then about health reports, and neither twice",
+      asked == ["Help other players pick maps?", "Help make the overlay more reliable?"]
+      and app.cfg["share_runs"] is False and app.cfg["share_health"] is False and not posted)
 app.cfg.pop("share_health")
 answer[0] = True
 app._ask_to_share()
