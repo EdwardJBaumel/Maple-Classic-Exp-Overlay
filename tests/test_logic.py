@@ -239,6 +239,18 @@ for name, bad in (("not a dict", [1, 2]), ("a bad key", {"big": [1, 2, 3, 4]}), 
                   ("floats", {"1920x1080/11": [1, 2, 3, 4.5]}), ("too many", {f"{1000 + i}x700/9": [1, 2, 3, 4] for i in range(9)})):
     m.CONFIG_PATH.write_text(json.dumps({"exp_v2_spots": bad}))
     check(f"a damaged exp_v2_spots ({name}) is dropped", "exp_v2_spots" not in m.load_config())
+# A07-1: a null is not "answered": the one-time questions must come back, not be skipped for good
+for key in ("share_runs", "share_health", "health_id", "reports_sent", "exp_v2_spots"):
+    m.CONFIG_PATH.write_text(json.dumps({key: None, "ui_scale": 150, "share_health" if key != "share_health" else "share_runs": True}))
+    cfg = m.load_config()
+    check(f"a null {key} in the settings file counts as missing (the question is asked again), other keys stay",
+          key not in cfg and cfg["ui_scale"] == 150)
+for name, bad in (("a string", "x"), ("a 2 MB string", "a" * 2_000_000), ("a list", [1]), ("negative n", {"day": "d", "n": -1}),
+                  ("n is a float", {"day": "d", "n": 1.5}), ("n is a bool", {"day": "d", "n": True})):
+    for key in ("share_runs", "share_health", "health_id", "reports_sent"):
+        m.CONFIG_PATH.write_text(json.dumps({key: bad, "ui_scale": 150}))
+        cfg = m.load_config()
+        check(f"{key} damaged as {name} is dropped, ui_scale kept", key not in cfg and cfg["ui_scale"] == 150)
 check(f"the right OS backend is made for {sys.platform} ({type(m.PLATFORM).__name__})",
       type(m.PLATFORM).__name__ == {"win32": "WindowsPlatform", "darwin": "MacPlatform"}.get(sys.platform))
 try:
@@ -307,6 +319,16 @@ for old in sorted((Path(__file__).parent / "upgrade").iterdir()):
           and all(log.sealed(r, m._SEALED_RUN) or r.get("estimated") for r in log.runs)      # (an estimated run's seal is meant not to verify)
           and log.aliases == before["aliases"] and not list(folder.glob("exp_log.damaged-*"))
           and (cfg["pos"], cfg["transparency"], cfg["gap_seconds"], cfg["topmost"]) == ([5300, 800], 30, 20, False))
+    # the health question is still to come (nothing answers it for them), and an answer, once saved, is kept
+    m.CONFIG_PATH = Path(tempfile.mkdtemp()) / "config.json"
+    shutil.copy2(old / "config.json", m.CONFIG_PATH)
+    asked_before = "share_health" not in m.load_config()
+    cfg["share_health"] = True
+    m.save_config(cfg)
+    again = m.load_config()
+    m.CONFIG_PATH = real_config
+    check(f"updating from {old.name}: the health question is still to be asked, and an answer saved after it is kept",
+          asked_before and again["share_health"] is True and again["gap_seconds"] == cfg["gap_seconds"] and again["pos"] == cfg["pos"])
     # ...and carrying on farming afterwards, with the old lines (and any notes on them) left as they were
     farm(log, 0, 310, map_name="Updated Map", level=41)
     after = json.loads((folder / "log.json").read_text(encoding="utf-8"))["entries"]
