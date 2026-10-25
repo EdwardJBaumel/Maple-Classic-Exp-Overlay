@@ -1769,6 +1769,25 @@ data["runs"] = [old]
 loaded = m.AutoLog(15, folder / "log.json", folder / "log.txt")
 check("an old run (no flags) loads, keeps its seal and can still be shared", loaded.unshared_runs() == [old])
 
+# ---- A13-1: the first %-only level (57) after the last numbered one (56), or a level-up from under 30%
+tr = m.ExpTracker(); tr.start()
+req56 = m.EXP_TABLE[55]
+for f in (0.90, 0.91, 0.92, 0.93):
+    tr.observe([(round(req56 * f), round(f * 100, 2))], True)
+res = [tr.observe_percent(p, 57, "badge") for p in (0.5, 0.5, 0.6)]
+check(f"the bar goes %-only at the level-up 56 -> 57: it is a level-up, not 'level changed' ({res}, Lv {m.level_for_req(tr.req)})",
+      tr.levels == 1 and m.level_for_req(tr.req) == 57 and not any("level changed" in n for _, n in res))
+tr = pct_tracker(56, 25.0)
+tr.observe_percent(26.0, 56, "badge")
+tr.observe_percent(26.0, 56, "badge")
+res = [tr.observe_percent(5.0, 57, "badge") for _ in range(3)]    # (a big EXP gain: the % only fell by 21 points)
+check(f"a level-up that leaves a % less than 30 points lower still counts ({res[-1]}, levels {tr.levels})",
+      tr.levels == 1 and m.level_for_req(tr.req) == 57)
+tr = pct_tracker(56, 25.0)
+tr.observe_percent(26.0, 56, "badge")
+res = tr.observe_percent(10.0, 56, "badge")
+check(f"...but a % that falls with the same level is still no level-up ({res})", tr.levels == 0)
+
 # ---- EXP estimated from a % alone stays on this PC: marked in the log, never shared
 log, path = new_log()
 t, _ = farm(log, 0, 1000, estimated=True)

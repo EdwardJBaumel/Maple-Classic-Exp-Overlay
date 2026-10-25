@@ -2693,7 +2693,9 @@ class ExpTracker:
         # A % that wrapped around (the level went up, or a misread): only the next level, read, says which.
         wrapped = self.exp is not None and self.pct is not None and self._format == "percent" and self.pct - pct > 30
         if level is not None and level != cur:
-            if wrapped and level == cur + 1:
+            # (the next level with a lower %, whatever the bar showed before and however far it fell: a level-up)
+            fell = self.exp is not None and self.pct is not None and pct < self.pct
+            if (wrapped or fell) and level == cur + 1:
                 last = self._pending_lvl
                 n = last[2] + 1 if last and last[0] == level else 1
                 self._pending_lvl = (level, pct, n)
