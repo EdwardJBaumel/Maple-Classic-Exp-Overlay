@@ -3,7 +3,9 @@ reader and only notes whether the two agree. It never changes a Reading, the tra
 
 The reader hands in the picture it just read, its own answer and how long it took; this keeps the counts,
 the last few disagreements (with their pictures, in memory only) and guards the CPU: if v2 costs more than
-half of today's reader it runs every other look, more than all of it and it is off for the session.
+half of today's reader it runs every other look, more than all of it and it is off for the session. Where today's
+reader finds no bar (a menu, the login screen) v2's whole-strip search costs many times more, so there it searches
+only every NOBAR_SECONDS and the guard leaves those looks out (it compares looks where both had the bar).
 """
 import time
 from collections import Counter, deque, namedtuple
@@ -14,6 +16,7 @@ GUARD_MIN = 20              # ...once it has at least this many
 THIN_RATIO, OFF_RATIO = 0.5, 1.0
 ERROR_PAUSE = 60            # seconds v2 is skipped after it raised
 STRIP_SECONDS = 10          # v2 may grab the bottom strip itself this often at most
+NOBAR_SECONDS = 10          # ...and search for a bar today's reader doesn't see this often at most
 KEEP = 3                    # disagreements kept (pictures of the EXP bar only, in memory)
 
 # category: what happened this look (one of CATEGORIES); ms: v2's time; spot: the EXP bar's box in the picture
@@ -50,6 +53,8 @@ class Shadow:
         self.thinned = False            # ...or to every other look
         self.pause_until = 0.0
         self.strip_at = -1e9
+        self.nobar_at = -1e9            # when v2 last searched while today's reader saw no bar
+        self.seen = False               # did v2 find the bar at its latest run
         self.flip = False
         self.font = None
         self.last = None                # (old answer, v2 answer) of the latest look
@@ -89,16 +94,23 @@ class Shadow:
         return Result("errors", None, None, None)
 
     # ---- one look
-    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None):
+    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None, searching=False):
         """Runs v2 on `img` (the picture today's reader just read) and compares. `old`: today's confident
         answer or None. `hint`: a box (x0, y0, x1, y1) in img where v2 saw the bar last time. `more()`: a
         bigger picture as (img, dx, dy) (the bottom strip, dx/dy where it starts relative to img) or None.
         `old_img`: the picture today's reader read, if v2 was given another (for the crop kept in a report).
         `own()`: v2's own small picture (when `img` doesn't hold the remembered spot) or None; called only once v2
         really runs, so a look v2 skips (off, paused, stopped, thinned) grabs nothing, and its time counts as v2's.
-        Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused)."""
+        `searching`: today's reader found no bar in this look. Then v2 runs only if it has the bar at a spot it just
+        read (cheap), or else at most every NOBAR_SECONDS (its whole-strip search is the slow part).
+        Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused, waiting
+        for its next search while there's no bar)."""
         if self.idle():
             return None
+        if searching and not (self.seen and (hint is not None or own is not None)):
+            if time.monotonic() - self.nobar_at < NOBAR_SECONDS:
+                return None
+            self.nobar_at = time.monotonic()
         if not self._allowed():
             self.counts["skipped"] += 1
             return Result("skipped", None, None, None)
@@ -129,8 +141,10 @@ class Shadow:
             self.on_error(e)
             return Result("errors", None, None, None)
         ms = (self.timer() - t0) * 1000
-        self.times.append((float(old_ms), ms))
+        if not searching:                   # (the guard compares like with like: looks where both had the bar)
+            self.times.append((float(old_ms), ms))
         self.counts["runs"] += 1
+        self.seen = lay is not None
         kind = compare(old, got)
         self.counts[kind] += 1
         self.last = (old, got)

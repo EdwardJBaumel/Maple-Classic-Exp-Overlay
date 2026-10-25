@@ -1345,6 +1345,33 @@ try:
     unit = shadow_unit(GOOD, cost_ms=12)         # v2 costs more than today's reader: off for the session
     cats = [unit.look(img, GOOD, 10.0).category for _ in range(shadow_mod.GUARD_MIN + 10)]
     check("shadow CPU guard: costing more than today's reader turns v2 off for the session", unit.stopped and cats[-1] == "skipped")
+
+    # Today's reader sees no bar (a menu, the login screen): v2's whole-strip search costs many times today's there
+    # (0.15-1 s on a busy 4K/5K picture), so it searches at most every NOBAR_SECONDS and the CPU guard leaves it out.
+    unit = shadow_unit(None, finds=False)
+    searches = []
+
+    def slow_find(img, hint):
+        unit.timer.now += 0.7
+        searches.append(hint)
+        return None
+    unit.find = slow_find
+    got = []
+    for _ in range(60):                             # 90 s of looks with no bar
+        got.append(unit.look(img, None, 30.0, searching=True))
+        clock[0] += 1.5
+    ran = [r for r in got if r is not None]
+    check("shadow: with no bar on today's side v2 searches at most every 10 s, the looks between aren't counted",
+          8 <= len(searches) <= 10 and len(ran) == len(searches) and all(r.category == "neither" for r in ran)
+          and sum(unit.counts[k] for k in shadow_mod.CATEGORIES) == len(ran))
+    check("shadow: ...and those slow searches never turn v2 off (the guard compares looks where both had the bar)",
+          not unit.stopped and not unit.thinned and len(unit.times) == 0)
+    unit = shadow_unit(GOOD)
+    unit.fits = lambda e, p: True
+    first = unit.look(img, None, 30.0, searching=True)
+    after = [unit.look(img, None, 30.0, hint=(90, 10, 310, 35), searching=True) for _ in range(5)]
+    check("shadow: ...but once v2 has the bar (at a spot it just read), it reads it at every look",
+          first.category == "v2_only" and all(r is not None and r.category == "v2_only" for r in after))
     unit = shadow_unit(GOOD)
     unit.on = False
     check("shadow: shadow_reader false runs nothing and counts nothing", unit.look(img, GOOD, 5.0) is None and not any(unit.counts.values()))

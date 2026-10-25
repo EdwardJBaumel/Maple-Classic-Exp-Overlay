@@ -2196,7 +2196,8 @@ class ScreenReader:
 
         old = reading.candidates[0] if reading.confident and reading.candidates else None
         small = own or img.shape[0] < wh - top or img.shape[1] < ww       # (a picture that already is the strip needs no other)
-        res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img, own)
+        res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img, own,
+                                searching=lay is None)
         ox, oy = where["ox"], where["oy"]
         if res is None:
             return reading
