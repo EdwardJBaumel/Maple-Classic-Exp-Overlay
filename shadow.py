@@ -47,7 +47,8 @@ class Shadow:
         self.find, self.read, self.fits, self.load_font, self.view = find, read, fits, font, view
         self.on_error, self.timer = on_error, timer
         self.on = True                  # the kill switch (config shadow_reader)
-        self.counts = Counter()         # CATEGORIES, plus "grabs" (strips v2 grabbed itself) and "runs"
+        self.counts = Counter()         # CATEGORIES, plus "grabs" (strips v2 grabbed itself), "runs" and "ticks"
+                                        # (agreements found by the recheck: EXP changed between the two grabs)
         self.times = deque(maxlen=GUARD_LOOKS)      # (today's reader ms, v2 ms) of the looks v2 ran
         self.stopped = False            # the CPU guard turned v2 off for the session
         self.thinned = False            # ...or to every other look
@@ -94,7 +95,8 @@ class Shadow:
         return Result("errors", None, None, None)
 
     # ---- one look
-    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None, searching=False):
+    def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None, searching=False,
+             recheck=None):
         """Runs v2 on `img` (the picture today's reader just read) and compares. `old`: today's confident
         answer or None. `hint`: a box (x0, y0, x1, y1) in img where v2 saw the bar last time. `more()`: a
         bigger picture as (img, dx, dy) (the bottom strip, dx/dy where it starts relative to img) or None.
@@ -103,6 +105,9 @@ class Shadow:
         really runs, so a look v2 skips (off, paused, stopped, thinned) grabs nothing, and its time counts as v2's.
         `searching`: today's reader found no bar in this look. Then v2 runs only if it has the bar at a spot it just
         read (cheap), or else at most every NOBAR_SECONDS (its whole-strip search is the slow part).
+        `recheck(picture)`: today's reader on another picture (answer or None). When v2 read its own picture and the
+        two disagree, today's reader reads v2's picture too: the same answer there means EXP changed between the two
+        grabs (a kill in those few ms), so it is counted as agree (and as a tick), not a disagreement.
         Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused, waiting
         for its next search while there's no bar)."""
         if self.idle():
@@ -118,10 +123,9 @@ class Shadow:
         try:
             if self.font is None:
                 self.font = self.load_font()
-            if own is not None:
-                mine = own()
-                if mine is not None:
-                    img, hint = mine, None
+            mine = own() if own is not None else None
+            if mine is not None:
+                img, hint = mine, None
             lay, dx, dy = self.find(img, hint), 0, 0
             if lay is None and more is not None and time.monotonic() - self.strip_at >= STRIP_SECONDS:
                 self.strip_at = time.monotonic()
@@ -146,6 +150,13 @@ class Shadow:
         self.counts["runs"] += 1
         self.seen = lay is not None
         kind = compare(old, got)
+        if kind == "disagree" and mine is not None and recheck is not None:
+            try:
+                if compare(recheck(mine), got) == "agree":
+                    kind = "agree"
+                    self.counts["ticks"] += 1
+            except Exception as e:
+                self.on_error(e)
         self.counts[kind] += 1
         self.last = (old, got)
         if kind == "disagree":
@@ -177,7 +188,7 @@ class Shadow:
         times = list(self.times)            # (the reading thread adds to these while this runs on the main thread)
         n = len(times)
         return {"on": self.on, "stopped": self.stopped, "thinned": self.thinned,
-                "counts": {k: self.counts[k] for k in CATEGORIES + ("grabs", "runs")},
+                "counts": {k: self.counts[k] for k in CATEGORIES + ("grabs", "runs", "ticks")},
                 "v2_ms": round(sum(t[1] for t in times) / n, 1) if n else None,
                 "old_ms": round(sum(t[0] for t in times) / n, 1) if n else None,
                 "last": self.last, "diffs": list(self.diffs)}

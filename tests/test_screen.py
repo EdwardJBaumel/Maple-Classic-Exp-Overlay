@@ -1372,6 +1372,32 @@ try:
     after = [unit.look(img, None, 30.0, hint=(90, 10, 310, 35), searching=True) for _ in range(5)]
     check("shadow: ...but once v2 has the bar (at a spot it just read), it reads it at every look",
           first.category == "v2_only" and all(r is not None and r.category == "v2_only" for r in after))
+
+    # v2 reads its own small picture, grabbed a moment after today's: a kill in between makes the numbers differ though
+    # neither misread (A10-1, seen live). Today's reader then reads v2's picture: the same answer there = EXP ticked.
+    pic = np.ones((40, 400, 3), np.uint8)
+    unit = shadow_unit(OTHER)
+    unit.fits = lambda e, p: True
+    res = unit.look(img, GOOD, 5.0, LAY, own=lambda: pic, recheck=lambda p: OTHER if p is pic else None)
+    check("shadow: a difference only because EXP ticked between today's picture and v2's own is 'agree' (counted as a tick)",
+          res.category == "agree" and unit.counts["ticks"] == 1 and unit.counts["disagree"] == 0 and not unit.diffs)
+    unit = shadow_unit(OTHER)
+    unit.fits = lambda e, p: True
+    res = unit.look(img, GOOD, 5.0, LAY, own=lambda: pic, recheck=lambda p: GOOD)
+    check("shadow: ...but if today's reader reads v2's picture differently, it stays a disagreement",
+          res.category == "disagree" and unit.counts["ticks"] == 0)
+    unit = shadow_unit(OTHER)
+    unit.fits = lambda e, p: True
+    res = unit.look(img, GOOD, 5.0, LAY, recheck=lambda p: OTHER)
+    check("shadow: ...and when both read the same picture nothing is rechecked", res.category == "disagree")
+    errs = []
+    unit = shadow_unit(OTHER, errors=errs)
+    unit.fits = lambda e, p: True
+
+    def broken(p):
+        raise ValueError("recheck")
+    res = unit.look(img, GOOD, 5.0, LAY, own=lambda: pic, recheck=broken)
+    check("shadow: ...a recheck that fails leaves the disagreement and is reported", res.category == "disagree" and len(errs) == 1)
     unit = shadow_unit(GOOD)
     unit.on = False
     check("shadow: shadow_reader false runs nothing and counts nothing", unit.look(img, GOOD, 5.0) is None and not any(unit.counts.values()))

@@ -179,6 +179,7 @@ def shadow_lines(s):
     out = [_kv("State", state),
            _kv("Looks", ", ".join(f"{k} {c.get(k, 0)}" for k in ("agree", "disagree", "v2_only", "old_only", "neither", "skipped", "errors"))),
            _kv("Own strip grabs", c.get("grabs", 0)),
+           _kv("EXP changed between the two pictures", c.get("ticks", 0)),
            _kv("Time per look", f"v2 {s.get('v2_ms')} ms, old reader {s.get('old_ms')} ms" if s.get("v2_ms") is not None else "not measured yet")]
     last = s.get("last")
     out.append(_kv("Last answers", f"old {answer_text(last[0])}, v2 {answer_text(last[1])}" if last else "none yet"))

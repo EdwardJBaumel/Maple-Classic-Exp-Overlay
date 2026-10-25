@@ -2165,6 +2165,15 @@ class ScreenReader:
             self.shadow.failed(e)           # (counted like any v2 error, and v2 rests a minute)
             return reading._replace(shadow=("errors", None))
 
+    def _today_answer(self, img):
+        """Today's reader (templates, no Tesseract) on another picture: only to tell a v2 disagreement from EXP that
+        changed between two screen grabs."""
+        lay = find_exp(img)
+        got = read_layout(self.templates, lay) if lay and self.templates else None
+        if got and got[0] is not None and not fits_exp_table(*got):
+            return None
+        return got
+
     def _shadow_look_v2(self, capture, rect, shot, reading, lay, started):
         if not shot or self.shadow.idle():
             return reading
@@ -2199,7 +2208,7 @@ class ScreenReader:
         old = reading.candidates[0] if reading.confident and reading.candidates else None
         small = own or img.shape[0] < wh - top or img.shape[1] < ww       # (a picture that already is the strip needs no other)
         res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img, own,
-                                searching=lay is None)
+                                searching=lay is None, recheck=self._today_answer)
         ox, oy = where["ox"], where["oy"]
         if res is None:
             return reading
