@@ -346,7 +346,7 @@ class HealthLog:
         for name, pair in PAIRS.items():
             body[name] = {k: min(MAX_COUNT, rec[name][k]) for k in pair}
         if rec["errors"]:
-            body["errors"] = dict(sorted(rec["errors"].items(), key=lambda kv: -kv[1])[:10])
+            body["errors"] = {k: min(MAX_COUNT, n) for k, n in sorted(rec["errors"].items(), key=lambda kv: -kv[1])[:10]}
         if rec["ms_n"]:
             body["ms"] = {"look_avg": round(min(10000.0, rec["ms_total"] / rec["ms_n"]), 1),
                           "look_p95": round(min(10000.0, self._p95(rec)), 1)}
