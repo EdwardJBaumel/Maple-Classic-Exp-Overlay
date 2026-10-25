@@ -103,5 +103,56 @@ check("the details have every part", all(x in full for x in ("== Computer ==", "
 check("the details include the errors and the history", "ValueError: x" in full and "+0:01  Tracking" in full)
 check("empty facts don't crash it", bool(report.summary({})) and bool(report.details({})) and report.looks_wrong({}) != [None])
 
+# ---- Send report: the scrubber, the typed message, the body
+import json  # noqa: E402
+
+NAMES = ["Bob", "BOB-PC", "bsmith"]
+nasty = {
+    "a Windows path with the user name": (r"Can't open C:\Users\Bob\AppData\Local\x\eng.traineddata now", "eng.traineddata"),
+    "OneDrive with a company name and spaces": (r"saved C:\Users\Bob\OneDrive - Contoso Ltd\Desktop\Maple EXP\log.json ok", "log.json"),
+    "a path outside the home folder": (r"tessdata at D:\Games\tools\tess\tessdata missing", "tessdata"),
+    "forward slashes on Windows": ("opened C:/Users/Bob/stuff/a.txt", "a.txt"),
+    "a UNC path": (r"read \\FILESRV\home\bsmith\notes.txt failed", "notes.txt"),
+    "a macOS home path": ("log in /Users/bsmith/Library/Application Support/Maple/x.json bad", "x.json"),
+    "a Linux home path": ("see /home/bsmith/.config/maple/c.json", "c.json"),
+    "a macOS path outside the home folder": ("running /Applications/Maple.app/Contents/MacOS/maple here", "maple"),
+}
+for name, (text, kept) in nasty.items():
+    out = report.scrub(text, NAMES)
+    leaks = ["Bob", "bsmith", "Users", "Contoso", "OneDrive", "FILESRV", "Applications", "Library", "Games", "home"]
+    check(f"scrub: {name} is cut to its last part", kept in out and not any(x in out for x in leaks))
+out = report.scrub("Error on BOB-PC for user bob: TesseractError('C:\\Users\\Bob\\x\\y.dll')", NAMES)
+check("scrub: the computer name and user name go, in any case, even inside an exception message",
+      "BOB-PC" not in out and "bob" not in out.lower() and "y.dll" in out)
+plain = "EXP bar not found 3 times. Status: Tracking | Last read: 3,060 [1.04%] on 10/24/2026, see https://mcwo.app/x and/or ask"
+check("scrub: ordinary text, numbers, dates, links and 'and/or' are kept", report.scrub(plain, NAMES) == plain)
+check("scrub: a short name (under 3 letters) isn't hunted through the text", report.scrub("go to the bo", ["bo"]) == "go to the bo")
+check("scrub: the text is capped at 12,000 characters", len(report.scrub("x" * 20000, NAMES)) == 12000)
+check("scrub: a name inside another word is left alone", report.scrub("Bobcat Bob", ["Bob"]) == "Bobcat <you>")
+
+check("a message must have words", report.message_problem("   ") and report.message_problem("") )
+check("a message of 2,000 characters is fine, 2,001 is not", report.message_problem("x" * 2000) is None and report.message_problem("x" * 2001))
+check("links are turned down, like the site does", all(report.message_problem(t) for t in
+      ("see http://a.b", "www.x.org", "join discord.gg/abc", "go to evil.com/x", "HTTPS://X")))
+check("a plain sentence is fine", report.message_problem("It stopped reading after I changed maps.") is None)
+
+contract = json.loads((Path(__file__).parent / "health_contract.json").read_text(encoding="utf-8"))
+for case in contract["report_valid"]:
+    b = case["body"]
+    body = report.report_body(b["id"], b["version"], "  " + b["message"] + " \n", b["details"])
+    check(f"report body: the contract's valid '{case['name']}' is built exactly",
+          body == b and list(body) == ["id", "version", "message", "details"] and report.message_problem(b["message"]) is None)
+base = contract["report_valid"][0]["body"]
+for case in contract["report_invalid"]:
+    change = {k: ("x" * int(v[5:]) if isinstance(v, str) and v.startswith("LONG:") else v) for k, v in case["change"].items()}
+    field = case["field"]
+    if field == "message":
+        ok = report.message_problem(change["message"]) is not None
+    elif field == "details":
+        ok = len(report.report_body(base["id"], base["version"], base["message"], change["details"])["details"]) == 12000
+    else:
+        ok = True                       # id and extra fields can't come from the dialog (the body has exactly four fields)
+    check(f"report body: the contract's invalid '{field}' ({list(change.values())[0] if len(str(change)) < 60 else 'long'}) can't reach the site", ok)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

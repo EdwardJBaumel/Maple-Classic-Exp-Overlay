@@ -922,6 +922,121 @@ except TypeError:
     check("the status doesn't crash before the first EXP reading (found_at unset)", False)
 app.reset()
 
+# ---- Report a bug > Send to the developer
+def new_windows(before):
+    return [c for c in app.root.winfo_children() if c not in before and c.winfo_class() == "Toplevel"]
+
+
+before = set(app.root.winfo_children())
+choice = app.report_bug()
+root.update()
+check("Report a bug offers both ways: Send to the developer and Report on GitHub",
+      button(choice, "Send to the developer") and button(choice, "Report on GitHub") and button(choice, "Cancel"))
+button(choice, "Cancel")[0].command()
+root.update()
+check("Cancel closes the choice", not choice.winfo_exists())
+
+posted = []
+real_post = m.post_report
+m.post_report = lambda body, timeout=15: (posted.append(body), "ok")[1]
+real_details = app._report_details
+app._report_details = lambda: "Maple Classic Exp Overlay bug report details\nEXP bar: found\nreading C:" + chr(92) + "Games" + chr(92) + "x.dll"
+try:
+    before = set(app.root.winfo_children())
+    app.send_report()
+    root.update()
+    dlg = new_windows(before)[0]
+    check("Send to the developer opens the dialog with the text box, the note and Send / Cancel",
+          button(dlg, "Send") and button(dlg, "Cancel") and any("No pictures are sent" in t for t in labels(dlg))
+          and any("What went wrong?" in t for t in labels(dlg)))
+    check("the 'What will be sent' fold-out starts closed", not dlg.fold.winfo_ismapped())
+    button(dlg, "What will be sent  " + chr(0x25b8))[0].command()
+    root.update()
+    shown_text = dlg.sent_text.get("1.0", "end-1c")
+    check("opening the fold-out shows the exact text that will be sent", dlg.fold.winfo_ismapped() and shown_text == dlg.details
+          and "EXP bar: found" in shown_text)
+
+    button(dlg, "Send")[0].command()
+    root.update()
+    check("Send with an empty box is refused and nothing is posted", not posted and "write a sentence" in dlg.status.cget("text"))
+    dlg.message.insert("1.0", "see www.spam.org")
+    button(dlg, "Send")[0].command()
+    root.update()
+    check("a link in the text is refused", not posted and "leave out links" in dlg.status.cget("text"))
+    dlg.message.delete("1.0", "end")
+    dlg.message.insert("1.0", "x" * 2001)
+    dlg.typed()
+    button(dlg, "Send")[0].command()
+    root.update()
+    check("more than 2,000 characters is refused, and the counter shows it",
+          not posted and "2,001 / 2,000" in dlg.counter.cget("text"))
+    dlg.message.delete("1.0", "end")
+    dlg.message.insert("1.0", "It stopped reading after I changed maps.")
+    dlg.typed()
+    check("the live counter counts what is typed", "40 / 2,000" in dlg.counter.cget("text"))
+    check("with sharing blocked (testing) it won't send", (button(dlg, "Send")[0].command(), root.update(), not posted)[2]
+          and "off while testing" in dlg.status.cget("text"))
+
+    os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
+    button(dlg, "Send")[0].command()
+    for _ in range(50):
+        root.update()
+        time.sleep(0.05)
+        if not app.q.empty():
+            break
+    kind, payload = app.q.get(timeout=2)
+    app._report_done(*payload)
+    root.update()
+    check("Send posts the four fields, with the health ID and the scrubbed text",
+          len(posted) == 1 and set(posted[0]) == {"id", "version", "message", "details"}
+          and posted[0]["details"] == dlg.details and posted[0]["message"] == "It stopped reading after I changed maps."
+          and posted[0]["version"] == m.VERSION and m.healthlog.good_id(posted[0]["id"]) and posted[0]["id"] == app.cfg["health_id"])
+    check("...then says thank you and counts it", "Sent, thank you" in dlg.status.cget("text") and m.reports_sent_today(app.cfg) == 1)
+    dlg.destroy()
+
+    for n in (2, 3):
+        app.cfg["reports_sent"] = {"day": m.healthlog.utc_day(time.time()), "n": n}
+        before = set(app.root.winfo_children())
+        app.send_report()
+        root.update()
+        d2 = new_windows(before)[0]
+        d2.message.insert("1.0", "again")
+        button(d2, "Send")[0].command()
+        root.update()
+        if n == 2:
+            time.sleep(0.3)
+            kind, payload = app.q.get(timeout=2)
+            app._report_done(*payload)
+            check("a 3rd report on the day is still allowed", len(posted) == 2)
+        else:
+            check("a 4th report on the day is refused locally, in plain words",
+                  len(posted) == 2 and "sent 3 reports today" in d2.status.cget("text"))
+        d2.destroy()
+
+    for outcome, words in (("later", "connected to the internet"), ("message", "leave out links"), ("limit", "sent 3 reports")):
+        app.cfg["reports_sent"] = {"day": "2000-01-01", "n": 0}
+        before = set(app.root.winfo_children())
+        app.send_report()
+        root.update()
+        d3 = new_windows(before)[0]
+        app._report_done(d3, outcome)
+        check(f"a '{outcome}' answer is explained in plain words and Send works again",
+              words in d3.status.cget("text") and d3.send_button._enabled)
+        d3.destroy()
+    app.cfg.pop("reports_sent", None)
+
+    before = set(app.root.winfo_children())
+    app.send_report()
+    root.update()
+    d4 = new_windows(before)[0]
+    button(d4, "Cancel")[0].command()
+    root.update()
+    check("Cancel closes the dialog without sending", not d4.winfo_exists() and len(posted) == 2)
+finally:
+    m.post_report = real_post
+    app._report_details = real_details
+    os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+
 if SCREEN:
     check(f"every window the tests opened is on the second screen (strays: {stray_windows(SCREEN)})", not stray_windows(SCREEN))
 check("the typeface is the bundled one, or it fell back cleanly", app._own_fonts in (True, False) and bool(app.theme.fam["extra"]))
