@@ -319,6 +319,16 @@ for old in sorted((Path(__file__).parent / "upgrade").iterdir()):
           and all(log.sealed(r, m._SEALED_RUN) or r.get("estimated") for r in log.runs)      # (an estimated run's seal is meant not to verify)
           and log.aliases == before["aliases"] and not list(folder.glob("exp_log.damaged-*"))
           and (cfg["pos"], cfg["transparency"], cfg["gap_seconds"], cfg["topmost"]) == ([5300, 800], 30, 20, False))
+    # the health question is still to come (nothing answers it for them), and an answer, once saved, is kept
+    m.CONFIG_PATH = Path(tempfile.mkdtemp()) / "config.json"
+    shutil.copy2(old / "config.json", m.CONFIG_PATH)
+    asked_before = "share_health" not in m.load_config()
+    cfg["share_health"] = True
+    m.save_config(cfg)
+    again = m.load_config()
+    m.CONFIG_PATH = real_config
+    check(f"updating from {old.name}: the health question is still to be asked, and an answer saved after it is kept",
+          asked_before and again["share_health"] is True and again["gap_seconds"] == cfg["gap_seconds"] and again["pos"] == cfg["pos"])
     # ...and carrying on farming afterwards, with the old lines (and any notes on them) left as they were
     farm(log, 0, 310, map_name="Updated Map", level=41)
     after = json.loads((folder / "log.json").read_text(encoding="utf-8"))["entries"]
