@@ -123,6 +123,8 @@ PART_NOTES = {              # what the status line says while a part of the read
     "Tesseract": "The backup number reader (Tesseract) isn't working right now",
 }
 TRIED_PARTS = {"map name": "map", "class": "class", "mesos": "mesos", "potions": "potions"}   # (health reports count these)
+STALE_LEVEL_SECONDS = 6          # after another character is found, a reading with the old level is still waiting this long
+PCT_WAIT_NOTES = ("percentage wrapped", "level up?", "level changed", "level ")   # what a %-only bar says while it waits
 LEVEL_FAILS_FOR_FALLBACK = 3    # badge reads that failed in a row before typing the level in is offered
 DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "check_updates": True, "skip_version": "", "ui_scale": 100, "compact": False, "hotkeys_on": True,
@@ -1791,6 +1793,7 @@ class ScreenReader:
         self.level = None           # the level read from the status bar's badge (two captures agreed)
         self.level_look = None      # what the last try at reading it saw: {"image", "votes", "why"}
         self.level_failures = 0     # badge reads in a row that gave nothing
+        self.badge_covered = False  # the last badge look found a window over it
         self.next_level_read = 0.0
         self._level_candidate = None    # a level seen once, waiting for a second capture to agree
         self.name_print = None      # a small picture of the character's name row (see level_ocr.name_print); never read as text
@@ -1847,9 +1850,16 @@ class ScreenReader:
 
     def use_window(self):
         self.mode, self.hwnd, self.box = "window", None, None
+        self.forget_level()
 
     def use_region(self, region):
         self.mode, self.region = "region", region
+        self.forget_level()
+
+    def forget_level(self):
+        """The badge level read so far belongs to what was looked at before (another place, character or reset)."""
+        self.level, self.level_failures, self._level_candidate = None, 0, None
+        self.recheck_level()
 
     def request_map(self):
         """Read the map name on the next look, even if it doesn't seem to have changed."""
@@ -2020,8 +2030,11 @@ class ScreenReader:
             return
         if self._blocked(x0, y0, w, h):
             self.level_look = {"image": None, "votes": {}, "why": "this window is covering the level badge: move it"}
+            self.badge_covered = True
+            self.level_failures += 1            # (a badge that stays out of sight opens the Level fallback like one that can't be read)
             self.next_level_read = now + 5
             return
+        self.badge_covered = False
         shot = capture.grab(x0, y0, w, h)
         look = {}
         try:
@@ -2693,7 +2706,9 @@ class ExpTracker:
         # A % that wrapped around (the level went up, or a misread): only the next level, read, says which.
         wrapped = self.exp is not None and self.pct is not None and self._format == "percent" and self.pct - pct > 30
         if level is not None and level != cur:
-            if wrapped and level == cur + 1:
+            # (the next level with a lower %, whatever the bar showed before and however far it fell: a level-up)
+            fell = self.exp is not None and self.pct is not None and pct < self.pct
+            if (wrapped or fell) and level == cur + 1:
                 last = self._pending_lvl
                 n = last[2] + 1 if last and last[0] == level else 1
                 self._pending_lvl = (level, pct, n)
@@ -3811,10 +3826,12 @@ class AutoLog:
         return None if r is None or r["map"] is None else max(0.0, now - r["start"])
 
     def runs_done(self, map_name, party, job, day=None):
-        """How many runs were finished (sealed) on a day for a map, party size and class."""
+        """How many runs were finished (sealed) on a day for a map, party size and class. A run estimated from a %
+        alone carries the seal "estimated" instead: it counts here, it is just never shared."""
         day = day or date.today().isoformat()
         return sum(1 for r in self.runs if r.get("date") == day and r.get("map") == map_name
-                   and r.get("party") == party and r.get("class") == job and self.sealed(r, _SEALED_RUN))
+                   and r.get("party") == party and r.get("class") == job
+                   and (self.sealed(r, _SEALED_RUN) or (r.get("estimated") and r.get("seal") == "estimated")))
 
     def unshared_runs(self):
         """Finished runs (exactly as the overlay saved them) not shared yet: only clean ones
@@ -4169,6 +4186,8 @@ class App:
         self.pct_note = ""                  # what the tracker last said about a %-only reading
         self._char_print = None             # the name row's print when the level was last known (memory only)
         self._char_seen = None              # the newest print looked at, so each is counted once
+        self.name_note = ""                 # what to say about a covered or partly covered name row
+        self._stale_level = None            # (level, when) of the character just left: a queued reading may still carry it
         self._char_diff = 0                 # prints in a row that differ from _char_print
         self._same_char = False             # the newest print matches the one from when the level was known
         self.other_char_at = None           # when another character was last noticed (the status says so for a while)
@@ -5543,7 +5562,8 @@ class App:
                 ok, note = self.session.observe(r.candidates, r.confident, now)
                 self.level_wait, self.pct_note = False, ""
                 self._char_print = self.reader.name_print if self.reader.name_print is not None else self._char_print
-            self.rejected = 0 if ok or self.level_wait else self.rejected + 1
+            waiting = r.percent_only and self.pct_note.startswith(PCT_WAIT_NOTES)    # (a %-only bar waiting for its level isn't misread)
+            self.rejected = 0 if ok or self.level_wait or waiting else self.rejected + 1
             if self.rejected >= 10:                 # keeps not adding up: find the EXP bar again
                 self.reader.box, self.rejected = None, 0
             if t.running and t.gained != before and not self.skip_log:
@@ -5566,6 +5586,8 @@ class App:
             status += "\nThe minimap's name is back."
         if self.note:
             status += f"\n{self.note}"
+        if r.percent_only and self.name_note:
+            status += f"\n{self.name_note}"
         if self.autolog.settle(now, self.tracker.running, **self.meso.for_log()):
             self.share_runs()                          # a finished run got its mesos (or went without)
         stale = self.meso.stale_note(now, self.tracker.running)       # (always asked, it keeps its own time)
@@ -5584,9 +5606,15 @@ class App:
         if self._check_character():
             self.level_wait = True
             return False, "another character"           # (this reading's level may be the other one's)
+        stale = self._stale_level
+        if stale and level is not None and level == stale[0] and time.monotonic() - stale[1] < STALE_LEVEL_SECONDS:
+            level, source = None, None                  # (read before the switch was seen: the old character's)
         if level is None and self.tracker.req is not None and self.tracker.level_source is None and not self._same_char:
             self.tracker.forget_level()                 # a level carried over from the number, but the character can't be told
+        had_level = self.tracker.req is not None
         ok, note = self.session.observe_percent(r.candidates[0][1], level, source, now)
+        if had_level and self.tracker.req is None:
+            self.reader.forget_level()                  # (the tracker gave its level up: the badge's old one must not bring it back)
         self.level_wait = note == "waiting to read your level"
         self.pct_note = note
         if note.startswith(("percentage wrapped", "level up?")):
@@ -5595,26 +5623,32 @@ class App:
 
     def _check_character(self):
         """Another character (its name row looks different) has its own level: start over for it. Only a
-        print that differs on two looks in a row counts, so something drawn over the name can't.
-        Returns True when it started over."""
+        print that differs on two looks in a row counts. A name row partly covered is judged by what shows:
+        the parts that show matching = the same character (kept, but said), not matching = another one.
+        Nothing showing = can't tell: it says so. Returns True when it started over."""
         cur = self.reader.name_print
         if cur is None:
             self._same_char = False
+            self.name_note = "The name under your character is covered, so it can't tell if it's the same character. Move what covers it."
             return False
         if cur is self._char_seen:
             return False
         self._char_seen = cur
-        if self._char_print is None or level_ocr.same_name(self._char_print, cur):
+        self.name_note = ""
+        match = "same" if self._char_print is None else level_ocr.name_match(self._char_print, cur)
+        if match in ("same", "alike"):
             self._same_char = self._char_print is not None
             self._char_print, self._char_diff = (cur if self._char_print is None else self._char_print), 0
+            if match == "alike":
+                self.name_note = "Part of the name is hidden. It still looks like the same character."
             return False
         self._same_char = False
         self._char_diff += 1
         if self._char_diff < 2:
             return False
-        self.reader.level = None
-        self.reader.recheck_level()
+        old_level = self.reader.level or level_for_req(self.tracker.req)
         self.reset()
+        self._stale_level = (old_level, time.monotonic())   # (a reading already queued still carries it)
         self._char_print = self._char_seen = cur          # (the new character is the one to compare with from now on)
         self.other_char_at = time.monotonic()
         return True
@@ -5658,12 +5692,21 @@ class App:
             if self.reader.mode == "region":
                 return ("Selected area: the level badge can't be read from here. "
                         "Settings, Level fallback lets you type your level in.")
+            if self.reader.badge_covered:
+                return ("The EXP bar shows only a percentage, and a window is covering the level badge: move it"
+                        + (". Or Settings, Level fallback lets you type your level in." if self._can_type_level() else "."))
             if self._can_type_level():
                 return ("The EXP bar shows only a percentage, and your level can't be read from the badge. "
                         "Settings, Level fallback lets you type it in.")
             return "The EXP bar shows only a percentage. Reading your level from the badge..."
         if self.pct_note.startswith("level changed"):
             return "Your level changed. Press Reset to start again on the new level."
+        if self.pct_note.startswith("level ") and "isn't supported" in self.pct_note:
+            return f"Can't estimate EXP: {self.pct_note}."
+        if self.pct_note.startswith("percentage wrapped"):
+            return "The percentage wrapped around. Looking at the level badge to see if you leveled up..."
+        if self.pct_note.startswith("level up?"):
+            return "Level up? Making sure from the level badge..."
         if t.req is None:
             # Normally the level is known within seconds; if not, it needs an EXP gain.
             if self.found_at is None or time.monotonic() - self.found_at < 8:
@@ -5797,7 +5840,7 @@ class App:
                    "Net / hr": net, "Elapsed": fmt_dur(el)},
             details={"% / hr": f"{rate / t.req * 100:.2f}%" if rate and t.req else "\u2014",
                      "Gained": est(f"{fmt_short(t.gained)}{f'  (+{t.levels} lvl)' if t.levels else ''}"),
-                     "Current": est(f"{fmt_num(shown[0])} [{shown[1]:.2f}%]") if shown else "\u2014",
+                     "Current": (APPROX if t.percent_mode else "") + f"{fmt_num(shown[0])} [{shown[1]:.2f}%]" if shown else "\u2014",
                      "Mesos": mesos, "Mesos / 5 min": fmt_num(m.per_5min(el)),
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
@@ -5861,6 +5904,8 @@ class App:
         self._char_print = self._char_seen = self.other_char_at = None      # (what was known about the character is over too)
         self._char_diff, self._same_char = 0, False
         self.pct_note, self.level_wait = "", False
+        self.reader.forget_level()
+        self._stale_level = None
         self.skip_log = False
         self._show_skip_log()
         self._set_start("Start")

@@ -222,3 +222,36 @@ def same_name(a, b):
                 worst = min(worst, float((xc * yc).sum()) / (max(nx, 1e-6) * max(ny, 1e-6)))
         best = max(best, worst)
     return best >= SAME_NAME
+
+
+def name_match(old, new):
+    """How a new print of the name row compares with the one kept: "same" (every part matches, as same_name),
+    "alike" (what is visible in the new one matches, but some of the old one's text isn't visible: something
+    covers part of the name), "different" (something visible doesn't match), or "hidden" (no new print)."""
+    if new is None:
+        return "hidden"
+    if old is None:
+        return "different"
+    best = ""
+    for shift in (-2, -1, 0, 1, 2):
+        x, y = (old[:, shift:], new[:, :new.shape[1] - shift]) if shift >= 0 else (old[:, :shift], new[:, -shift:])
+        kinds = []                            # per part: its match (a number), or None = text before and none now
+        for c in range(0, x.shape[1] - CHUNK + 1, CHUNK // 2):
+            xc, yc = x[:, c:c + CHUNK], y[:, c:c + CHUNK]
+            nx, ny = np.linalg.norm(xc), np.linalg.norm(yc)
+            if ny >= 1.0:
+                kinds.append(float((xc * yc).sum()) / (max(nx, 1e-6) * ny))
+            elif nx >= 1.0:
+                kinds.append(None)            # (hidden, or a shorter name)
+            else:
+                kinds.append(-1.0)            # (empty both: not counted)
+        good = sum(1 for k in kinds if k is not None and k >= SAME_NAME)
+        missing = [i for i, k in enumerate(kinds) if k is None]
+        # (a part cut through by the cover only half matches: it is let off when it sits right next to a hidden one)
+        bad = [i for i, k in enumerate(kinds) if k is not None and 0 <= k < SAME_NAME]
+        if good < 3 or any(not any(abs(i - j) <= 2 for j in missing) for i in bad) or (bad and not missing):
+            continue
+        found = "alike" if missing else "same"
+        if found == "same" or not best:
+            best = found
+    return best or "different"

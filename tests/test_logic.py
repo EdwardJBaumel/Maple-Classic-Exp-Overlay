@@ -1769,6 +1769,25 @@ data["runs"] = [old]
 loaded = m.AutoLog(15, folder / "log.json", folder / "log.txt")
 check("an old run (no flags) loads, keeps its seal and can still be shared", loaded.unshared_runs() == [old])
 
+# ---- A13-1: the first %-only level (57) after the last numbered one (56), or a level-up from under 30%
+tr = m.ExpTracker(); tr.start()
+req56 = m.EXP_TABLE[55]
+for f in (0.90, 0.91, 0.92, 0.93):
+    tr.observe([(round(req56 * f), round(f * 100, 2))], True)
+res = [tr.observe_percent(p, 57, "badge") for p in (0.5, 0.5, 0.6)]
+check(f"the bar goes %-only at the level-up 56 -> 57: it is a level-up, not 'level changed' ({res}, Lv {m.level_for_req(tr.req)})",
+      tr.levels == 1 and m.level_for_req(tr.req) == 57 and not any("level changed" in n for _, n in res))
+tr = pct_tracker(56, 25.0)
+tr.observe_percent(26.0, 56, "badge")
+tr.observe_percent(26.0, 56, "badge")
+res = [tr.observe_percent(5.0, 57, "badge") for _ in range(3)]    # (a big EXP gain: the % only fell by 21 points)
+check(f"a level-up that leaves a % less than 30 points lower still counts ({res[-1]}, levels {tr.levels})",
+      tr.levels == 1 and m.level_for_req(tr.req) == 57)
+tr = pct_tracker(56, 25.0)
+tr.observe_percent(26.0, 56, "badge")
+res = tr.observe_percent(10.0, 56, "badge")
+check(f"...but a % that falls with the same level is still no level-up ({res})", tr.levels == 0)
+
 # ---- EXP estimated from a % alone stays on this PC: marked in the log, never shared
 log, path = new_log()
 t, _ = farm(log, 0, 1000, estimated=True)
@@ -1793,6 +1812,11 @@ log, _ = new_log()
 t, _ = farm(log, 0, 1100, estimated=True, mesos_at=lambda t: (round(t * 10), t))
 check("an estimated run never waits for a mesos look, and keeps the seal an older overlay can't use",
       log.runs and all(not r.get("pending") and r["seal"] == "estimated" for r in log.runs) and log.unshared_runs() == [])
+log, _ = new_log()
+t, _ = farm(log, 0, 1000, estimated=True)
+r = log.runs[0]
+check(f"A13-3: estimated runs still count as done runs ({log.runs_done(r['map'], r['party'], r['class'])} of {len(log.runs)})",
+      log.runs_done(r["map"], r["party"], r["class"]) == len(log.runs))
 line = {"date": "2026-10-08", "map": "Rocky Road II", "level": 60, "party": 1, "class": "Bandit", "exp": 4000,
         "seconds": 1800, "mesos": 0, "mesos_seconds": 0}
 check("an estimated line says so in its row and in the copied text",
