@@ -994,6 +994,32 @@ try:
     check("...then says thank you and counts it", "Sent, thank you" in dlg.status.cget("text") and m.reports_sent_today(app.cfg) == 1)
     dlg.destroy()
 
+    # A05: the site counts UTF-16 units (an emoji is 2), and the window keeps answering while a send is slow
+    app.cfg.pop("reports_sent", None)
+    before = set(app.root.winfo_children())
+    app.send_report()
+    root.update()
+    d_slow = new_windows(before)[0]
+    d_slow.message.insert("1.0", "\U0001F600" * 1001)
+    d_slow.typed()
+    check("the counter counts an emoji as 2, like the site, and turns red over 2,000",
+          "2,002 / 2,000" in d_slow.counter.cget("text") and d_slow.counter.cget("fg") == m.BAD)
+    d_slow.message.delete("1.0", "end")
+    d_slow.message.insert("1.0", "slow site")
+    slow_count = len(posted)
+    m.post_report = lambda body, timeout=15: (time.sleep(1.5), "ok")[1]
+    ticks, t0 = 0, time.monotonic()
+    button(d_slow, "Send")[0].command()
+    while "Sent, thank you" not in d_slow.status.cget("text") and time.monotonic() - t0 < 6:
+        root.update()
+        ticks += 1
+        time.sleep(0.02)
+    check("while a slow send is waiting the window keeps answering (no freeze), then says thank you",
+          ticks > 30 and "Sent, thank you" in d_slow.status.cget("text") and len(posted) == slow_count)
+    m.post_report = lambda body, timeout=15: (posted.append(body), "ok")[1]
+    d_slow.destroy()
+    app.cfg.pop("reports_sent", None)
+
     for n in (2, 3):
         app.cfg["reports_sent"] = {"day": m.healthlog.utc_day(time.time()), "n": n}
         before = set(app.root.winfo_children())

@@ -300,6 +300,26 @@ finally:
 check("Send report: a Chinese report goes out as UTF-8 under the site's 16,384 bytes, and reads back the same",
       len(sent[0][1]) <= 16384 and json.loads(sent[0][1].decode("utf-8")) == wide)
 
+# The two IDs never meet: the install ID goes only with shared runs, the health ID only with health and Send report
+INSTALL, HEALTH = "installidinstallid0123456789", "0123456789abcdef"
+os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
+m.urllib.request.urlopen = answering({"ok": True, "results": []}, 200)
+sent.clear()
+try:
+    m.post_runs(INSTALL, [{"started": 1, "exp": 5, "level_start": 3, "level_end": 3}])
+    m.post_health(full)
+    m.post_report(report.report_body(HEALTH, "0.9.14-beta", "It stopped.", "d"))
+finally:
+    m.urllib.request.urlopen = real_urlopen
+    os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+runs_body, health_body, report_body_sent = (d.decode("utf-8") for _, d in sent)
+check("the install ID is only in the run upload, never in a health report or Send report",
+      INSTALL in runs_body and INSTALL not in health_body + report_body_sent)
+check("the health ID is never in a run upload", HEALTH not in runs_body and HEALTH in report_body_sent)
+src = Path(m.__file__).read_text(encoding="utf-8")
+check("every request built in maple_exp.py (4 of them) says only the program name and version",
+      src.count("urllib.request.Request(") == 4 and src.count('"User-Agent": f"MapleClassicExpOverlay/{VERSION}"') == 4)
+
 # shadow mode (shadow.py): reader v2's counts and time go in the report once there are any
 fresh()
 log = new_log()

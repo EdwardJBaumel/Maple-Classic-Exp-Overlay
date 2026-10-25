@@ -76,7 +76,7 @@ def looks_wrong(f, now=None):
     h = f.get("health") or {}
     if t.get("state") == "no_eng":
         out.append("Tesseract has no usable English file (" + ("the folder's name has unusual characters"
-                   if t.get("why") == "path" else "tessdata\\eng.traineddata is missing") + "), so map names and the class can't be read.")
+                   if t.get("why") == "path" else "eng.traineddata is missing from its tessdata folder") + "), so map names and the class can't be read.")
     elif not t.get("found"):
         out.append("Tesseract wasn't found, so map names and the class can't be read.")
     if game.get("mode") == "window" and not game.get("found"):
