@@ -15,6 +15,7 @@
 // Posts must be JSON, so other websites can't make their visitors' browsers send runs.
 
 import { canonicalMap, isListed } from "./mapnames.js";
+import { handleReports } from "./reports.js";
 
 const MIN_PLAYERS = 3;              // different players needed before a map is ranked
 const MAX_MAPS = 40;                // ranked maps in one answer
@@ -134,6 +135,9 @@ export default {
     const url = new URL(request.url);
     const now = clock(request, url);
     try {
+      if (url.pathname === "/api/health" || url.pathname === "/api/report") {
+        return await handleReports(request, env, now, url, { connectionCode, connectionPart });
+      }
       if (request.method === "POST" && url.pathname === "/api/runs") return await postRuns(request, env, now);
       if (request.method === "GET" && url.pathname === "/api/stats") return await getStats(url, env, ctx, now);
       if (request.method === "GET" && url.pathname === "/api/ladder") return await getLadder(url, env, ctx, now);
