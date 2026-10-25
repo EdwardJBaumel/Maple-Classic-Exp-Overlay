@@ -276,6 +276,50 @@ for good, bad in (({"day": "2026-10-25", "n": 2}, {"day": "2026-10-25", "n": "2"
     check(f"config: reports_sent {good} is kept and {bad} is dropped", kept and "reports_sent" not in m.load_config())
 m.CONFIG_PATH.write_text("{}", encoding="utf-8")
 
+# Send report: the end of errors.log (A05)
+me, B = m.Path.home().name, chr(92)
+old = f"[2026-01-01] error with C:{B}Users{B}{me}{B}old.py and {me}\n" * 400
+m.ERROR_LOG_PATH.write_text(old + f"[2026-10-25] the last error: {m.Path.home() / 'x.py'!r}\nEND-MARK\n", encoding="utf-8")
+tail = m.App._errors_tail()
+check("Send report: the errors part is the real end of errors.log, even when the file is long", tail.endswith("END-MARK\n") and len(tail) == 2500)
+check("Send report: it holds no user name or folder, also from a doubled-backslash repr",
+      me.lower() not in tail.lower() and "Users" not in tail and "x.py" in tail)
+m.ERROR_LOG_PATH.unlink()
+check("Send report: no errors.log gives an empty errors part", m.App._errors_tail() == "")
+
+os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
+m.urllib.request.urlopen = answering({"ok": True}, 200)
+sent.clear()
+try:
+    import report
+    wide = report.report_body("0123456789abcdef", "0.9.14-beta", "中" * 1500, "中" * 12000)
+    m.post_report(wide)
+finally:
+    m.urllib.request.urlopen = real_urlopen
+    os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+check("Send report: a Chinese report goes out as UTF-8 under the site's 16,384 bytes, and reads back the same",
+      len(sent[0][1]) <= 16384 and json.loads(sent[0][1].decode("utf-8")) == wide)
+
+# The two IDs never meet: the install ID goes only with shared runs, the health ID only with health and Send report
+INSTALL, HEALTH = "installidinstallid0123456789", "0123456789abcdef"
+os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
+m.urllib.request.urlopen = answering({"ok": True, "results": []}, 200)
+sent.clear()
+try:
+    m.post_runs(INSTALL, [{"started": 1, "exp": 5, "level_start": 3, "level_end": 3}])
+    m.post_health(full)
+    m.post_report(report.report_body(HEALTH, "0.9.14-beta", "It stopped.", "d"))
+finally:
+    m.urllib.request.urlopen = real_urlopen
+    os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+runs_body, health_body, report_body_sent = (d.decode("utf-8") for _, d in sent)
+check("the install ID is only in the run upload, never in a health report or Send report",
+      INSTALL in runs_body and INSTALL not in health_body + report_body_sent)
+check("the health ID is never in a run upload", HEALTH not in runs_body and HEALTH in report_body_sent)
+src = Path(m.__file__).read_text(encoding="utf-8")
+check("every request built in maple_exp.py (4 of them) says only the program name and version",
+      src.count("urllib.request.Request(") == 4 and src.count('"User-Agent": f"MapleClassicExpOverlay/{VERSION}"') == 4)
+
 # shadow mode (shadow.py): reader v2's counts and time go in the report once there are any
 fresh()
 log = new_log()

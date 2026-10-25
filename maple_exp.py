@@ -400,7 +400,7 @@ def post_runs(install, runs, timeout=15):
     Returns the start times of the runs it's done with: the ones the site has (now or from
     before), and ones it turned down for good. Runs turned down only for today ("retry", too
     many sent today) are left to be sent again later."""
-    if os.environ.get("MAPLE_EXP_DATA") and not os.environ.get("MAPLE_EXP_ALLOW_SHARE"):
+    if sharing_blocked():
         # MAPLE_EXP_DATA moves the data folder, which only tests do. What they have in their logs is
         # made up, and made-up runs must never reach the real site: so not while testing.
         raise RuntimeError("sharing is off while testing (MAPLE_EXP_DATA is set)")
@@ -495,7 +495,7 @@ def post_report(body, timeout=15):
     or 'later' (a network problem or the site is down)."""
     if sharing_blocked():
         raise RuntimeError("Send report is off while testing (MAPLE_EXP_DATA is set)")
-    request = urllib.request.Request(f"{STATS_SITE}/api/report", data=json.dumps(body).encode(), headers={
+    request = urllib.request.Request(f"{STATS_SITE}/api/report", data=report.encode_body(body), headers={
         "content-type": "application/json", "User-Agent": f"MapleClassicExpOverlay/{VERSION}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -6055,7 +6055,8 @@ class App:
 
         def typed(event=None):
             text = w.message.get("1.0", "end-1c")
-            counter.configure(text=f"{len(text):,} / {report.MAX_MESSAGE:,}", fg=BAD if len(text.strip()) > report.MAX_MESSAGE else FAINT)
+            counter.configure(text=f"{report.units(text):,} / {report.MAX_MESSAGE:,}",
+                              fg=BAD if report.units(report.clean_message(text)) > report.MAX_MESSAGE else FAINT)
         w.message.bind("<KeyRelease>", typed)
         w.counter, w.typed = counter, typed
         fold = tk.Frame(w, bg=BG)
@@ -6149,12 +6150,21 @@ class App:
         save_config(self.cfg)
 
     @staticmethod
-    def _private(text):
+    def _private(text, limit=report.MAX_DETAILS):
         """Nothing personal: file paths cut to their last part, and the Windows or macOS user name and the
         computer name taken out wherever they appear (see report.scrub)."""
         names = [Path.home().name, os.environ.get("USERNAME", ""), os.environ.get("USER", ""),
                  os.environ.get("LOGNAME", ""), os.environ.get("COMPUTERNAME", ""), platform.node()]
-        return report.scrub(text, names)
+        return report.scrub(text, names, limit)
+
+    @staticmethod
+    def _errors_tail(size=2500):
+        """The end of errors.log, scrubbed. All of it is scrubbed first and only then cut, so the cut can't
+        leave half a path, and it really is the end of the file."""
+        try:
+            return App._private(ERROR_LOG_PATH.read_text(encoding="utf-8", errors="replace"), None)[-size:]
+        except Exception:
+            return ""
 
     def _report_facts(self):
         """Everything a bug report says, as a plain dict (see report.py)."""
@@ -6167,11 +6177,7 @@ class App:
                 monitors = [(m_["width"], m_["height"]) for m_ in sct.monitors[1:]]
         except Exception as e:
             log_error("listing the screens for a bug report", e)
-        errors = ""
-        try:
-            errors = self._private(ERROR_LOG_PATH.read_text(encoding="utf-8", errors="replace"))[-2500:]
-        except Exception:
-            pass
+        errors = self._errors_tail()
         now = time.monotonic()
         h = self.health
         up = max(1.0, now - self.started)
