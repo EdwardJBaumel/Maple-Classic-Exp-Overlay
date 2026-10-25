@@ -124,6 +124,7 @@ Click the **log icon** (top left, next to the status pill) to open the log. It's
 - **Always on top of other windows.** Keeps the overlay above the game. It's on by default.
 - **Check for updates when it starts.** On by default. See [Updates](#updates).
 - **Share my 15-minute runs.** See [Best maps for your class](#best-maps-for-your-class).
+- **Send daily health reports.** Once a day, a short anonymous summary of how well the overlay reads your game. See [Privacy](#privacy).
 - **Open data folder.** Opens the folder where your log and settings are saved.
 - **Check for updates.** Checks right now.
 - **Report a bug.** See below.
@@ -200,7 +201,7 @@ Every version is tested against thousands of misread numbers, and against real s
 **Only download this overlay from this repository's [Releases](https://github.com/beanguri/Maple-Classic-Exp-Overlay/releases).** Other people have copied the code (that's allowed, it's open source), but their copies aren't mine and I haven't checked them. Mine are built by GitHub, and the steps below show how to check that.
 
 - **It only looks at your screen, like a screen recorder.** It never touches the game's files or memory, and never presses keys or clicks for you.
-- **It only goes online for two things:** asking GitHub whether there's a newer version when it starts, and, only if you said yes, sharing your finished 15-minute runs (see above). Nothing about who you are is sent. Both can be turned off in ⚙. See [Privacy](#privacy).
+- **It only goes online for these things:** asking GitHub whether there's a newer version when it starts; sharing your finished 15-minute runs, only if you said yes (see above); the daily health report, only if you said yes; and a bug report, only when you click Send report yourself. Nothing about who you are is sent. Each of the first three can be turned off in ⚙. See [Privacy](#privacy).
 - **Your antivirus might warn about it.** Antivirus programs sometimes flag small new programs by mistake. All of the code is public right here, so anyone can check what it does.
 - **It isn't made by or affiliated with Nexon.** Like any third-party tool, you use it at your own risk.
 
@@ -211,8 +212,9 @@ Every version is tested against thousands of misread numbers, and against real s
 - **Potions stay here too.** Your potion counts, prices and costs are never sent anywhere.
 - **The update check** (on by default, can be turned off in ⚙) asks GitHub for the newest version and what's new in it. Nothing about you is sent.
 - **15-minute runs are only shared if you said yes.** Each one is the map, when you farmed it, your level, class and party size, the EXP and mesos you got (EXP only if the mesos couldn't be trusted), the overlay's version, and a random ID made by your copy of the overlay. Never your character's name, your game account or your Windows user name.
+- **Daily health reports are only sent if you said yes** (you're asked once; you can change it any time in Settings). Once a day the overlay sends numbers about the day before: the overlay's version, your Windows version, your screens' sizes, the game window's size, how many times it looked at the game and how each look went (for example how often it found the EXP bar), how many times the class, map name, mesos and potion readers worked, how long a look takes, how long you tracked, and the names of any errors (just the kind, like `TesseractError`). Never your character's name, chat, maps, class, amounts, pictures, file paths or your log. It carries a random ID made only for these reports (kept in your settings, and not the same as the ID on shared runs, so the two can't be joined). The website keeps them for 90 days, never shows them on the site, and uses them only to find and fix reading problems. The numbers about potions are only how often the overlay could read the potion bar, not how many you used.
 - **The website keeps** those runs. To limit spam it also keeps a scrambled code made from your internet address with a secret key, which changes every day and can't be turned back into the address. Your address itself isn't kept.
-- **Bug reports** only go to GitHub if you click Submit there yourself.
+- **Bug reports** only go to GitHub if you click Submit there yourself, or to the website if you click Send report (you see exactly what is sent first).
 
 ## Where the download comes from
 
@@ -241,7 +243,7 @@ Free code signing from [SignPath Foundation](https://signpath.org) is planned, s
 
 - Committers and reviewers: [beanguri](https://github.com/beanguri)
 - Approvers: [beanguri](https://github.com/beanguri)
-- Privacy policy: see [Privacy](#privacy) above. In short: your log and notes stay on your PC, and the overlay only sends anything to another system if you turn on sharing your finished 15-minute runs (off until you say yes, and you can turn it off any time in Settings), or to check GitHub for a newer version (can be turned off too).
+- Privacy policy: see [Privacy](#privacy) above. In short: your log and notes stay on your PC, and the overlay only sends anything to another system if you turn on sharing your finished 15-minute runs or the daily health report (both off until you say yes, and you can turn them off any time in Settings), if you click Send report on a bug report, or to check GitHub for a newer version (can be turned off too).
 
 **Credits:** the list of the game's map names (`assets/maps.txt`) comes from [meowdb.com](https://meowdb.com/msclassic/maps/all), a fan-made MapleStory Classic database (thank you). The typeface is [Manrope](https://github.com/googlefonts/manrope) (SIL Open Font License, included as `assets/fonts/OFL.txt`).
 

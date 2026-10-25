@@ -446,6 +446,57 @@ check("an existing config from before this feature counts as an update", first_r
 check("the same version shows neither again", first_run(False, m.VERSION) == (["share"], m.VERSION))
 check("going back to an older version shows nothing and keeps what was seen", first_run(False, "0.9.99") == (["share"], "0.9.99"))
 check("what's new has a note for this version", bool(m.WHATS_NEW.get(m.VERSION)))
+# the health report question: asked once, after the sharing question; "No" never sends
+del app._ask_to_share
+real_ask_yesno, real_post_health = m.messagebox.askyesno, m.post_health
+asked, answer, posted = [], [False], []
+m.messagebox.askyesno = lambda title, text, **k: asked.append(title) or answer[0]
+m.post_health = lambda body, timeout=15: posted.append(body) or ("ok", "")
+os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"              # (post_health is replaced above: nothing leaves this PC)
+app.cfg["share_runs"] = False
+app.cfg.pop("share_health", None)
+yesterday = m.healthlog.utc_day(time.time() - 86400)
+real_clock = app.healthlog.clock
+app.healthlog.clock = lambda: time.time() - 86400
+app.healthlog.snapshot("0.9.14-beta", "Windows 10", [], "screen", "ok")
+app.healthlog.look("read", ms=10.0, game=(1920, 1080, False, 11.0))
+app.healthlog.clock = real_clock
+app._ask_to_share()
+check("the health question is asked once, with its own title", asked == ["Help make the overlay more reliable?"]
+      and app.cfg["share_health"] is False)
+app._ask_to_share()
+check("...and not again", len(asked) == 1)
+app._health_tick()
+pump(0.6)
+check("answering No never sends anything", not posted and app.cfg["share_health"] is False)
+app.cfg.pop("share_health")
+answer[0] = True
+app._ask_to_share()
+check("answering Yes is saved", app.cfg["share_health"] is True)
+app.healthlog.last_attempt = 0.0
+app._health_tick()
+pump(0.8)
+check("with Yes, the finished day is sent once and marked sent", len(posted) == 1 and posted[0]["day"] == yesterday
+      and posted[0]["id"] == app.cfg["health_id"] and app.healthlog.last_sent == yesterday)
+app._health_tick()
+pump(0.4)
+check("...and not again", len(posted) == 1)
+app.open_settings()
+sw = app.settings_win
+sw.update()
+check("Settings has a health report switch showing the answer", app._health_on.get() is True)
+app._health_on.set(False)
+sw.update()
+check("switching it off in Settings is saved", app.cfg["share_health"] is False
+      and json.loads(m.CONFIG_PATH.read_text())["share_health"] is False)
+app._health_on.set(True)
+sw.update()
+check("...and on again", app.cfg["share_health"] is True)
+sw.destroy()
+app.settings_win = None
+os.environ.pop("MAPLE_EXP_ALLOW_SHARE")
+m.messagebox.askyesno, m.post_health = real_ask_yesno, real_post_health
+app._ask_to_share = lambda: calls.append("share")
 picked = []
 selector = m.RegionSelector(root, picked.append)             # (it crashed on Windows in 0.9.7 and 0.9.8-beta)
 root.update()

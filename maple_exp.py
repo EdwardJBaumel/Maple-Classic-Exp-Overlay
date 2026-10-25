@@ -33,6 +33,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -48,6 +49,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from capture import ScreenCapture, as_capture, grab  # noqa: F401
+import healthlog
 import level_ocr
 import ocr
 import potions
@@ -78,6 +80,7 @@ DATA_DIR = Path(os.environ.get("MAPLE_EXP_DATA") or PLATFORM.data_root() / "Mapl
 
 CONFIG_PATH = DATA_DIR / "config.json"
 ERROR_LOG_PATH = DATA_DIR / "errors.log"
+HEALTH_PATH = DATA_DIR / "health.json"        # the day-by-day counts behind the health reports (healthlog.py)
 TEMPLATE_PATH = ASSETS / "digits.npz"
 ICON_PATH = ASSETS / "icon.ico"
 POLL_SECONDS = 1.5          # how often to read the EXP bar
@@ -113,6 +116,7 @@ PART_NOTES = {              # what the status line says while a part of the read
     "level": "The level badge can't be read right now",
     "Tesseract": "The backup number reader (Tesseract) isn't working right now",
 }
+TRIED_PARTS = {"map name": "map", "class": "class", "mesos": "mesos", "potions": "potions"}   # (health reports count these)
 LEVEL_FAILS_FOR_FALLBACK = 3    # badge reads that failed in a row before typing the level in is offered
 DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "check_updates": True, "skip_version": "", "ui_scale": 100, "compact": False, "hotkeys_on": True,
@@ -248,7 +252,9 @@ def load_config():
                   k in ("left", "top") or v[k] > 0) for k in ("left", "top", "width", "height")),
               "log_columns": lambda v: isinstance(v, dict), "log_columns_pt": lambda v: isinstance(v, dict),
               "log_open": lambda v: type(v) is bool,
-              "share_runs": lambda v: type(v) is bool}       # missing: not asked yet
+              "share_runs": lambda v: type(v) is bool,       # missing: not asked yet
+              "share_health": lambda v: type(v) is bool,     # (same: the daily health report)
+              "health_id": healthlog.good_id}
     for key, ok in checks.items():
         if key in cfg and cfg[key] is not None and not ok(cfg[key]):
             del cfg[key]
@@ -387,6 +393,38 @@ def post_runs(install, runs, timeout=15):
     with urllib.request.urlopen(request, timeout=timeout) as response:
         data = json.loads(response.read(1_000_000).decode("utf-8"))
     return [r.get("started") for r in data.get("results", []) if r.get("ok") or not r.get("retry")]
+
+
+def sharing_blocked():
+    """True while testing: MAPLE_EXP_DATA moves the data folder, which only tests do, and what a test holds is
+    made up, so nothing is sent unless MAPLE_EXP_ALLOW_SHARE says so."""
+    return bool(os.environ.get("MAPLE_EXP_DATA") and not os.environ.get("MAPLE_EXP_ALLOW_SHARE"))
+
+
+def post_health(body, timeout=15):
+    """Sends one health report (healthlog.HealthLog.body) to the stats site. Returns (outcome, detail):
+    'ok' (taken; also when the site already had that day), 'bad' (refused: detail names the field), 'big'
+    (too large) or 'later' (a limit, a network problem or the site is down: try again tomorrow)."""
+    if sharing_blocked():
+        raise RuntimeError("health reports are off while testing (MAPLE_EXP_DATA is set)")
+    request = urllib.request.Request(f"{STATS_SITE}/api/health", data=json.dumps(body).encode(), headers={
+        "content-type": "application/json", "User-Agent": f"MapleClassicExpOverlay/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read(10_000).decode("utf-8"))
+        return ("ok", "") if isinstance(data, dict) and data.get("ok") else ("later", "")
+    except urllib.error.HTTPError as e:
+        if e.code == 413:
+            return "big", ""
+        if e.code == 400:
+            try:
+                field = str(json.loads(e.read(1000).decode("utf-8")).get("error", ""))
+            except Exception:
+                field = ""
+            return "bad", re.sub(r"[^A-Za-z_]", "", field)[:40]
+        return "later", ""
+    except Exception:
+        return "later", ""
 
 
 # --------------------------------------------------------------------------- hotkeys
@@ -1574,10 +1612,14 @@ def find_party_bars(bgr, gh, hsv=None):
 # --------------------------------------------------------------------------- finding it on screen
 
 Reading = namedtuple("Reading", "where candidates confident text image boxes map note "
-                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level",
-                     defaults=((), False, "", None, (), None, None, None, None, (), None, None, None, None, False, None))
+                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms",
+                     defaults=((), False, "", None, (), None, None, None, None, (), None, None, None, None, False, None,
+                               None, (), None))
 # percent_only: the bar shows just "[58.47%]" (candidates are then [(None, pct)]); level: the level read
 # from the status bar's LV badge, with where it came from, as (level, source), or None
+# exp_kind, tries and ms are for health reports (healthlog.py): how the EXP look went (read, tesseract, unclear,
+# not_found, covered or no_window), which other readers tried during the look as (part, worked) pairs, and
+# how long the look took in milliseconds
 
 
 def _view(img, lay):
@@ -1652,6 +1694,7 @@ class ScreenReader:
         self._level_candidate = None    # a level seen once, waiting for a second capture to agree
         self.name_print = None      # a small picture of the character's name row (see level_ocr.name_print); never read as text
         self.next_name_read = 0.0
+        self._tries = []                    # (part, worked) for the readers that tried during this look
         self.part_errors = Counter()        # how often each part of the reading failed (by part name)
         self.error_types = Counter()        # ...and by exception type name (never the message)
         self.part_failed_at = {}            # part -> when it last failed, until a later try works
@@ -1666,9 +1709,15 @@ class ScreenReader:
             yield
         except Exception as e:
             self._part_failed(part, e)
+            if part in TRIED_PARTS:
+                self._tried(TRIED_PARTS[part], False)
         else:
             if self.part_failed_at.get(part) == before:     # (unless the part caught a failure itself)
                 self.part_failed_at.pop(part, None)
+
+    def _tried(self, part, worked):
+        """Notes that a reader tried during this look (map, class, level, mesos, potions), for health reports."""
+        self._tries.append((part, bool(worked)))
 
     def _part_failed(self, part, exc):
         now = time.monotonic()
@@ -1727,6 +1776,7 @@ class ScreenReader:
             capture.end_look()
 
     def _look(self, capture):
+        self._tries = []
         if self.look_again_requested:
             self.look_again_requested = False
             self._forget_places()
@@ -1735,11 +1785,11 @@ class ScreenReader:
         if self.mode == "region":
             reading = self._read_region(capture, rect)
         elif not self.hwnd and PLATFORM.missing_permission():
-            return Reading(PLATFORM.missing_permission())
+            return Reading(PLATFORM.missing_permission(), exp_kind="no_window")
         elif not self.hwnd:
-            return Reading("MapleStory window not found. Is the game running?")
+            return Reading("MapleStory window not found. Is the game running?", exp_kind="no_window")
         elif not rect:
-            return Reading("MapleStory is minimized. Bring the game back up.")
+            return Reading("MapleStory is minimized. Bring the game back up.", exp_kind="no_window")
         else:
             reading = self._read_window(capture, rect)
         if reading.percent_only and self.mode == "region":
@@ -1760,7 +1810,8 @@ class ScreenReader:
                     with self._part("level"):
                         self._read_level(capture, rect)
         return self._with_part_notes(reading._replace(
-            level=(self.level, "badge") if self.level and reading.percent_only and self.mode == "window" else None))
+            level=(self.level, "badge") if self.level and reading.percent_only and self.mode == "window" else None,
+            tries=tuple(self._tries)))
 
     def map_blind_seconds(self):
         """How long the minimap's name box hasn't been visible (0 if it never was: no map to lose)."""
@@ -1813,6 +1864,7 @@ class ScreenReader:
         look = {}
         job = read_job(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, look) if shot else None
         self.job_look = look or None
+        self._tried("class", job)
         if job:
             self.job = job
         self.next_job_read = now + (60 if job else 10)
@@ -1870,6 +1922,7 @@ class ScreenReader:
             self._part_failed("level", e)
             seen = None
         self.level_look = look
+        self._tried("level", seen is not None)
         if seen is None:
             self.level_failures += 1
             self._level_candidate = None
@@ -1931,7 +1984,7 @@ class ScreenReader:
         capture = self.capture = as_capture(capture)
         r = self.region
         if not r:
-            return Reading("No area selected. Click Select area.")
+            return Reading("No area selected. Click Select area.", exp_kind="no_window")
         shot = self._hide_own(capture.grab(r["left"], r["top"], r["width"], r["height"]))
         reading, lay = self._read(shot, "Selected area")
         if reading.confident:
@@ -1945,7 +1998,7 @@ class ScreenReader:
         if self.box:
             bx, by, bw, bh = self.box
             if self._blocked(wx + bx, wy + by, bw, bh):
-                return Reading("This window is covering the EXP bar. Move it.")
+                return Reading("This window is covering the EXP bar. Move it.", exp_kind="covered")
             shot = capture.grab(wx + bx, wy + by, bw, bh)
             reading, lay = self._read(shot, where)
             if reading.confident:
@@ -1969,8 +2022,9 @@ class ScreenReader:
             lay = find_exp(shot[0]) if shot else None
         if not lay:
             if self._blocked(wx, wy + top, ww, wh - top):
-                return Reading("Can't find the EXP bar. Is this window covering it?")
-            return Reading("Can't find the EXP bar at the bottom of the game. Is something covering it?")
+                return Reading("Can't find the EXP bar. Is this window covering it?", exp_kind="covered")
+            return Reading("Can't find the EXP bar at the bottom of the game. Is something covering it?",
+                           exp_kind="not_found")
         img, sx, sy = shot
         g = lay.gh
         lead = g if lay.exp else 5.5 * g       # (a %-only bar is found by its label, so the label stays in the spot)
@@ -1984,23 +2038,25 @@ class ScreenReader:
         return reading
 
     def _read(self, shot, where, lay=None):
-        """Returns (Reading, Layout or None)."""
+        """Returns (Reading, Layout or None). Its exp_kind (for health reports): read = the templates gave a
+        number that fits (or a clear percentage); tesseract = only Tesseract's candidate is left; unclear = the
+        bar is there but nothing can be trusted; not_found = no bar (or off screen)."""
         if not shot:
-            return Reading(_problem(where, "The EXP bar is off screen.")), None
+            return Reading(_problem(where, "The EXP bar is off screen."), exp_kind="not_found"), None
         img = shot[0]
         lay = lay or find_exp(img)
         if not lay:
-            return Reading(_problem(where, "Can't find the EXP bar.")), None
+            return Reading(_problem(where, "Can't find the EXP bar."), exp_kind="not_found"), None
         view, boxes = _view(img, lay)
         got = read_layout(self.templates, lay) if self.templates else None
         if not lay.exp:                       # only "[58.47%]": the level has to come from elsewhere
             if got:
                 return Reading(where, [got], True, f"[{got[1]:.2f}%] (percentage only)", view, boxes,
-                               percent_only=True), lay
+                               percent_only=True, exp_kind="read"), lay
             return Reading(_problem(where, "Found the EXP bar, but can't read its percentage clearly."),
-                           image=view, boxes=boxes, percent_only=True), lay
+                           image=view, boxes=boxes, percent_only=True, exp_kind="unclear"), lay
         if got and fits_exp_table(*got):
-            return Reading(where, [got], True, f"{got[0]:,} [{got[1]:.2f}%]", view, boxes), lay
+            return Reading(where, [got], True, f"{got[0]:,} [{got[1]:.2f}%]", view, boxes, exp_kind="read"), lay
         # Unclear digits, or a reading that fits no level: not trusted. Readings that do fit
         # a level go first, so the tracker tries those.
         cands = [got] if got else []
@@ -2010,9 +2066,10 @@ class ScreenReader:
         if cands:
             e, p = cands[0]
             how = "" if (e, p) == got else " (Tesseract)"
-            return Reading(where, cands, False, f"{e:,} [{p:.2f}%]{how}", view, boxes), lay
+            return Reading(where, cands, False, f"{e:,} [{p:.2f}%]{how}", view, boxes,
+                           exp_kind="tesseract" if how else "unclear"), lay
         return Reading(_problem(where, "Found the EXP bar, but can't read its numbers clearly."),
-                       image=view, boxes=boxes), lay
+                       image=view, boxes=boxes, exp_kind="unclear"), lay
 
     def _read_extras(self, capture, rect, reading):
         """Adds the mesos count and, every few seconds, the party size to a reading."""
@@ -2102,6 +2159,7 @@ class ScreenReader:
             else:
                 with self._part("mesos"):
                     mesos, image, boxes = self._read_mesos(capture, wx + bx, wy + by, bw, bh)
+                    self._tried("mesos", mesos is not None)
         window = self.window if now <= self.window_until else None
         if window:
             notes.append(f"{WINDOW_NAMES[window]} window open.")
@@ -2109,6 +2167,8 @@ class ScreenReader:
         if now >= self.next_bar:
             with self._part("potions"):
                 bar = self._read_potion_bar(capture, rect, notes)
+                if bar is not None:
+                    self._tried("potions", bool(bar))
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
                                 mesos_at=moved, window=window, bar=bar, note=" ".join(notes) or None)
 
@@ -2265,6 +2325,7 @@ class ScreenReader:
                     elif self.map_unread and now >= self.next_map_read:
                         with self._part("map name"):
                             name = read_map_name(shot[0], g)
+                            self._tried("map", name is not None)
                         self.map_look = {"image": shot[0], "text": name}
                         self.map_unread = name is None
                         self.next_map_read = now + (2 if hidden else 5)   # if unreadable, try again later
@@ -3907,6 +3968,9 @@ class App:
         self.last_logged = None
         self.skip_log = False               # "Don't log" is on: this run isn't logged
         self._sharing, self._next_share = False, 0.0       # sending runs to the site
+        self.healthlog = healthlog.HealthLog(HEALTH_PATH)   # counts for the daily health report
+        self._health_sending, self._health_at, self._health_snap_at = False, None, 0.0
+        self._health_monitors, self._health_errors = [], {}
         self.job = None                     # the class, from the status bar
         self.map_read = None                # the map name exactly as read
         self.map_hidden, self.map_back_at = False, None     # the minimap's name out of sight for a few seconds
@@ -4587,6 +4651,11 @@ class App:
         self._switch(body, f"Share my {RUN_SECONDS // 60}-minute runs, anonymously", sharing).pack(anchor="w", pady=(px(6), 0))
         tk.Label(body, text="They feed the best-maps site. Your notes and log never leave this PC.", wraplength=wrap,
                  justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
+        health_on = self._health_on = tk.BooleanVar(value=self.cfg.get("share_health") is True)
+        self._switch(body, "Send daily health reports", health_on).pack(anchor="w", pady=(px(6), 0))
+        tk.Label(body, text="A short anonymous summary of how well the overlay reads your game, so problems get "
+                            "fixed. Numbers only: no names, chat, maps or pictures.", wraplength=wrap,
+                 justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
 
         def apply(*_):
             try:
@@ -4602,6 +4671,8 @@ class App:
             if bool(sharing.get()) != bool(self.cfg.get("share_runs")):
                 self.cfg["share_runs"] = bool(sharing.get())
                 self.share_runs()
+            if bool(health_on.get()) != (self.cfg.get("share_health") is True):
+                self.cfg["share_health"] = bool(health_on.get())
             self._apply_window_settings()
             w.attributes("-topmost", self.cfg["topmost"])
             scale = int(size.get().rstrip("%"))
@@ -4611,7 +4682,7 @@ class App:
                 self.root.after(60, self._reopen_settings)        # (drawn again at the new size)
             save_config(self.cfg)
 
-        for var in (gap, transparency, topmost, updates, sharing, size, potions_on):
+        for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on):
             var.trace_add("write", apply)
         self._hotkey_settings(body)
         buttons = tk.Frame(body, bg=BG)
@@ -4845,7 +4916,8 @@ class App:
             while not self.stop_evt.is_set():
                 t0 = time.monotonic()
                 try:
-                    self.q.put(("reading", self.reader.read(capture)))
+                    reading = self.reader.read(capture)
+                    self.q.put(("reading", reading._replace(ms=(time.monotonic() - t0) * 1000)))
                     self.health.finished(t0)
                 except Exception as e:
                     log_error("reading the screen", e)
@@ -4989,8 +5061,25 @@ class App:
         show(0)
 
     def _ask_to_share(self):
-        if "share_runs" in self.cfg:
+        if "share_runs" not in self.cfg:
+            self._ask_run_sharing()
+        self._ask_health()
+
+    def _ask_health(self):
+        """Once: may the overlay send a short anonymous summary of how well it reads the game each day?"""
+        if "share_health" in self.cfg:
             return
+        yes = messagebox.askyesno(
+            "Help make the overlay more reliable?",
+            "Once a day, send a short anonymous summary of how well the overlay is reading your game "
+            "(for example how often it found the EXP bar, your game's window size and the overlay's "
+            "version), so problems can be fixed even when nobody reports them.\n\n"
+            "Never your character's name, chat, maps, pictures or your log. You can change this any "
+            "time in Settings.", parent=self.root)
+        self.cfg["share_health"] = bool(yes)
+        save_config(self.cfg)
+
+    def _ask_run_sharing(self):
         yes = messagebox.askyesno(
             "Help other players pick maps?",
             "Share your farming, so everyone can see which maps give the most EXP for their "
@@ -5019,6 +5108,75 @@ class App:
             except Exception:
                 self.q.put(("shared", None))           # offline or the site is down: later
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- health reports (healthlog.py): numbers only, once a day, only if the player said yes
+    def _count_health(self, r, now):
+        """Counts one look in today's health record. Runs on the main thread, once per Reading, so the
+        categories always add up to the number of looks."""
+        last, self._health_at = self._health_at, now
+        rect, gh = self.reader.last_rect, self.reader.gh
+        game = None
+        if rect and gh:
+            game = (rect[2], rect[3], any(rect[2] == w and rect[3] == h for w, h, _ in self._health_monitors), gh)
+        self.healthlog.look(healthlog.kind_of(r), r.percent_only, r.tries, r.ms,
+                            (now - last) if last is not None and self.tracker.running else 0.0, game)
+
+    def _health_snapshot(self):
+        """What the setup is like today (recorded while the game is there, not when the report is sent)."""
+        screens = []
+        try:
+            with mss.mss() as sct:
+                for m in sct.monitors[1:5]:
+                    dpi = PLATFORM.screen_dpi(m["left"] + m["width"] // 2, m["top"] + m["height"] // 2)
+                    scale = round(dpi / 96 * 100) if dpi else None
+                    screens.append((m["width"], m["height"], scale if scale and 50 <= scale <= 500 else None))
+        except Exception as e:
+            log_error("listing the screens for the health report", e)
+        self._health_monitors = screens
+        capture = self.reader.capture.name
+        self.healthlog.snapshot(VERSION, PLATFORM.version(), screens,
+                                "region" if self.reader.mode == "region" else capture if capture == "window" else "screen",
+                                tesseract_state)
+
+    def _health_tick(self):
+        """Called a few times a second from the refresh: keeps the record up to date and saved, and sends a
+        finished day when it is time (at most one a hour, even across restarts)."""
+        now = time.monotonic()
+        if now >= self._health_snap_at:
+            self._health_snap_at = now + healthlog.SAVE_EVERY
+            self._health_snapshot()
+        try:
+            seen = dict(self.reader.error_types)
+        except RuntimeError:                            # (the reading thread changed it just then: next time)
+            seen = self._health_errors
+        self.healthlog.errors({k: n - self._health_errors.get(k, 0) for k, n in seen.items()})
+        self._health_errors = seen
+        self.healthlog.save(force=False)
+        if self.cfg.get("share_health") is not True or self._health_sending or sharing_blocked():
+            return
+        if healthlog.ensure_id(self.cfg):
+            save_config(self.cfg)
+        due = self.healthlog.due(self.cfg["health_id"])
+        if due is None:
+            return
+        day, body = due
+        self._health_sending = True
+        self.healthlog.attempting()
+
+        def work():
+            try:
+                self.q.put(("health_sent", (day,) + post_health(body)))
+            except Exception:
+                self.q.put(("health_sent", (day, "later", "")))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _health_done(self, day, outcome, detail):
+        self._health_sending = False
+        if outcome == "bad":
+            log_error(f"the site refused the health report for {day}", ValueError(detail or "unknown field"))
+        elif outcome == "big":
+            log_error(f"the site refused the health report for {day}", ValueError("too large"))
+        self.healthlog.finish(day, outcome)
 
     # ---- updates
     def check_updates(self, manual=False):
@@ -5097,6 +5255,7 @@ class App:
             while True:
                 kind, payload = self.q.get_nowait()
                 if kind == "error":
+                    self.healthlog.errors({payload.split(":")[0].strip(): 1})      # (the type's name, never the message)
                     self.recent.add(f"Error reading the screen: {payload}")
                     self.status.set("Something went wrong reading the screen. Trying again... "
                                     "(details are in errors.log: Settings > Open data folder)")
@@ -5108,6 +5267,8 @@ class App:
                     self._sharing = False
                     if payload:
                         self.autolog.mark_shared(payload)
+                elif kind == "health_sent":
+                    self._health_done(*payload)
                 else:
                     self._handle(payload)
         except queue.Empty:
@@ -5120,6 +5281,7 @@ class App:
 
     def _handle(self, r):
         t, now = self.tracker, time.monotonic()
+        self._count_health(r, now)
         if r.image is not None:
             self.last_capture = r
         if r.mesos_image is not None:
@@ -5446,6 +5608,7 @@ class App:
         self.reader.own_rect = self._window_rect()
         if now >= self._next_share:                   # retry runs that couldn't be sent
             self.share_runs()
+        self._health_tick()
 
     # ---- buttons
     def _hotkey(self, action):
@@ -5695,7 +5858,8 @@ class App:
             "mesos": fmt_num(self.meso.value) if self.meso.value is not None else None, "tracking": bool(self.session.on),
             "tracker": f"paused: {self.session.waiting or 'no'}, gained {fmt_num(t.gained)} EXP in {fmt_dur(t.elapsed())}",
             "settings": {"mode": self.reader.mode, **{k: self.cfg.get(k) for k in ("gap_seconds", "transparency", "topmost", "ui_scale",
-                                                      "compact", "hotkeys_on", "share_runs", "check_updates")}},
+                                                      "compact", "hotkeys_on", "share_runs", "check_updates")},
+                         "share_health": self.cfg.get("share_health"), "health_last_sent": self.healthlog.last_sent or None},
             "timeline": [self._private(x) for x in self.recent.lines()], "errors": errors,
         }
 
@@ -5838,6 +6002,7 @@ class App:
             log_error("saving the log size", e)
         self.cfg["pos"] = [self.root.winfo_x(), self.root.winfo_y()]
         save_config(self.cfg)
+        self.healthlog.save()
         self.root.destroy()
 
 
