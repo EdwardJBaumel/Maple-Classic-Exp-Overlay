@@ -6,6 +6,7 @@ short history of what happened (Recent), keeps count of how the reading thread i
 Nothing here reads the screen or the network. Nothing personal goes in: no character name,
 and the Windows user name is taken out of anything that looks like a file path by the caller.
 """
+import re
 import time
 from collections import deque
 
@@ -208,3 +209,49 @@ def details(f):
     out += ["== What happened (+m:ss since the overlay started) =="] + (f.get("timeline") or ["(nothing yet)"]) + [""]
     out += ["== errors.log (the end of it) ==", (f.get("errors") or "(no errors)").strip(), ""]
     return "\n".join(out)
+
+
+# ---- sending a report to the developer (Send report)
+
+MAX_MESSAGE = 2000                  # what the site takes (server/src/reports.js)
+MAX_DETAILS = 12000
+_LINK = re.compile(r"http|www\.|discord\.gg|\.com/", re.I)
+_PATHS = (
+    re.compile(r'(?<![A-Za-z0-9])[A-Za-z]:[\\/](?![\\/])(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\s\\/:*?"<>|]*'),      # C:\Users\Me\OneDrive - Co\x.py
+    re.compile(r'\\\\(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\s\\/:*?"<>|]*'),                # \\server\share\x
+    re.compile(r"(?<![\w:./])/(?:Users|home)/(?:[^/\r\n]+/)*[^\s/]*"),              # /Users/me/Library/x
+    re.compile(r"(?<![\w:./])/(?:[\w.\-~@+]+/)+[\w.\-~@+]*"),                       # /Applications/X.app/y
+)
+
+
+def _last_part(match):
+    return re.split(r"[\\/]", match.group(0).rstrip("\\/"))[-1] or "<folder>"
+
+
+def scrub(text, names=(), limit=MAX_DETAILS):
+    """The text with nothing personal left: every absolute path shortened to its last part, each of `names`
+    (Windows or macOS user name, computer name) replaced, and no longer than `limit` characters."""
+    text = str(text)
+    for pattern in _PATHS:
+        text = pattern.sub(_last_part, text)
+    for name in {n for n in names if n and len(n) > 2}:
+        text = re.sub(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", "<you>", text, flags=re.I)
+    return text[:limit]
+
+
+def message_problem(message):
+    """Why the typed message can't be sent (in the player's words), or None."""
+    message = message.strip()
+    if not message:
+        return "Please write a sentence about what went wrong."
+    if len(message) > MAX_MESSAGE:
+        return f"Please keep it under {MAX_MESSAGE:,} characters."
+    if _LINK.search(message):
+        return "Please leave out links."
+    return None
+
+
+def report_body(health_id, version, message, details):
+    """What /api/report takes: exactly these four fields."""
+    return {"id": health_id, "version": version, "message": message.strip(),
+            "details": str(details)[:MAX_DETAILS]}

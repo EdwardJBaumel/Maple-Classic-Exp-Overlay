@@ -24,6 +24,7 @@ import os
 
 for _name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_name, "1")        # (before numpy is imported)
+import platform
 import queue
 import re
 import secrets
@@ -254,7 +255,8 @@ def load_config():
               "log_open": lambda v: type(v) is bool,
               "share_runs": lambda v: type(v) is bool,       # missing: not asked yet
               "share_health": lambda v: type(v) is bool,     # (same: the daily health report)
-              "health_id": healthlog.good_id}
+              "health_id": healthlog.good_id,
+              "reports_sent": lambda v: isinstance(v, dict) and isinstance(v.get("day"), str) and type(v.get("n")) is int and v["n"] >= 0}
     for key, ok in checks.items():
         if key in cfg and cfg[key] is not None and not ok(cfg[key]):
             del cfg[key]
@@ -457,6 +459,43 @@ PH, PW = 28, 19             # size of one digit patch at that height
 SHIFT = 3                   # px of wiggle room when lining a digit up with an example
 MIN_SCORE = 0.75            # correlation the best digit needs (true matches score ~0.9+)
 MIN_LEAD = 0.03             # ...and how far ahead of the runner-up it must be
+
+
+
+MAX_REPORTS_PER_DAY = 3         # Send report: the site takes 3 per day per ID too
+
+
+def reports_sent_today(cfg, now=None):
+    """How many reports this player has sent today (UTC day, like the site counts)."""
+    sent = cfg.get("reports_sent")
+    today = healthlog.utc_day(time.time() if now is None else now)
+    return sent["n"] if isinstance(sent, dict) and sent.get("day") == today else 0
+
+
+def post_report(body, timeout=15):
+    """Sends one Send report (report.report_body) to the stats site. Returns 'ok', 'limit' (3 a day),
+    'message' (the site doesn't like the typed text), 'bad' (refused for another reason, or too large)
+    or 'later' (a network problem or the site is down)."""
+    if sharing_blocked():
+        raise RuntimeError("Send report is off while testing (MAPLE_EXP_DATA is set)")
+    request = urllib.request.Request(f"{STATS_SITE}/api/report", data=json.dumps(body).encode(), headers={
+        "content-type": "application/json", "User-Agent": f"MapleClassicExpOverlay/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read(10_000).decode("utf-8"))
+        return "ok" if isinstance(data, dict) and data.get("ok") else "later"
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "limit"
+        if e.code == 400:
+            try:
+                field = str(json.loads(e.read(1000).decode("utf-8")).get("error", ""))
+            except Exception:
+                field = ""
+            return "message" if field == "message" else "bad"
+        return "bad" if e.code == 413 else "later"
+    except Exception:
+        return "later"
 
 
 def _blobs(mask):
@@ -5269,6 +5308,8 @@ class App:
                         self.autolog.mark_shared(payload)
                 elif kind == "health_sent":
                     self._health_done(*payload)
+                elif kind == "report_sent":
+                    self._report_done(*payload)
                 else:
                     self._handle(payload)
         except queue.Empty:
@@ -5773,6 +5814,31 @@ class App:
 
     # ---- bug reports
     def report_bug(self, parent=None):
+        """Asks how to report: straight to the developer (no account) or on GitHub."""
+        parent = parent or self.root
+        th = self.theme
+        w = self._small_window("Report a bug", None)
+        tk.Label(w, text="Report a bug", bg=BG, fg=ACCENT, font=th.font("extra", 20)).pack(anchor="w")
+        tk.Label(w, text="How would you like to report it?", bg=BG, fg=DIM, font=th.font("regular", 12)
+                 ).pack(anchor="w", pady=(2, th.px(14)))
+
+        def pick(then):
+            w.destroy()
+            then(parent)
+        Button(w, th, text="Send to the developer", kind="primary", width=300, height=40, radius=12, size=13,
+               command=lambda: pick(self.send_report), bg=BG).pack(anchor="w")
+        tk.Label(w, text="No account needed. You see exactly what is sent first.", bg=BG, fg=FAINT,
+                 font=th.font("regular", 11)).pack(anchor="w", pady=(2, th.px(12)))
+        Button(w, th, text="Report on GitHub", kind="secondary", width=300, height=40, radius=12, size=13,
+               command=lambda: pick(self._report_on_github), bg=BG).pack(anchor="w")
+        tk.Label(w, text="Needs a free GitHub account. You can add pictures.", bg=BG, fg=FAINT,
+                 font=th.font("regular", 11)).pack(anchor="w", pady=(2, th.px(12)))
+        Button(w, th, text="Cancel", kind="secondary", width=96, height=36, radius=10, size=12,
+               command=w.destroy, bg=BG).pack(anchor="e")
+        self._report_choice = w
+        return w
+
+    def _report_on_github(self, parent=None):
         """Opens a new GitHub issue in the browser, filled in with what the tracker knows, and
         saves a picture and a text file of the details for the player to drag in. Nothing is
         sent by the tracker itself: the player sees everything and clicks Submit (or doesn't)."""
@@ -5803,13 +5869,136 @@ class App:
             except Exception as e:
                 log_error("opening the bug report's folder", e)
 
+    def _report_details(self):
+        """The bug report's details text, scrubbed: the same words go to GitHub and to Send report."""
+        facts = self._report_facts()
+        self._report_facts_cache = facts
+        return self._private(report.details(facts))
+
+    def send_report(self, parent=None):
+        """The Send report dialog: the player types what went wrong, sees exactly what will be sent
+        (text only), and the overlay posts it to the stats site."""
+        th = self.theme
+        try:
+            details = self._report_details()
+        except Exception as e:
+            log_error("collecting the details for Send report", e)
+            details = ""
+        w = self._small_window("Send to the developer", None)
+        w.details = details
+        tk.Label(w, text="Send to the developer", bg=BG, fg=ACCENT, font=th.font("extra", 20)).pack(anchor="w")
+        tk.Label(w, text="What went wrong?", bg=BG, fg=FG, font=th.font("semibold", 12)
+                 ).pack(anchor="w", pady=(th.px(10), th.px(4)))
+        box = tk.Frame(w, bg=LIST_BG, highlightthickness=1, highlightbackground=LINE)
+        box.pack(fill="x")
+        w.message = tk.Text(box, width=58, height=5, wrap="word", bg=LIST_BG, fg=FG, insertbackground=FG, relief="flat",
+                            font=th.font("regular", 12), padx=th.px(10), pady=th.px(8), highlightthickness=0, undo=True)
+        w.message.pack(fill="x")
+        counter = tk.Label(w, text=f"0 / {report.MAX_MESSAGE:,}", bg=BG, fg=FAINT, font=th.font("regular", 10))
+        counter.pack(anchor="e")
+
+        def typed(event=None):
+            text = w.message.get("1.0", "end-1c")
+            counter.configure(text=f"{len(text):,} / {report.MAX_MESSAGE:,}", fg=BAD if len(text.strip()) > report.MAX_MESSAGE else FAINT)
+        w.message.bind("<KeyRelease>", typed)
+        w.counter, w.typed = counter, typed
+        fold = tk.Frame(w, bg=BG)
+        shown = tk.BooleanVar(value=False)
+        w.fold, w.fold_open = fold, shown
+        w.sent_text = tk.Text(fold, width=58, height=10, wrap="word", bg=LIST_BG, fg=DIM, relief="flat",
+                              font=th.font("regular", 10), padx=th.px(10), pady=th.px(8), highlightthickness=0)
+        w.sent_text.insert("1.0", details or "(nothing)")
+        w.sent_text.configure(state="disabled")
+        scroll = ttk.Scrollbar(fold, command=w.sent_text.yview, style="Dark.Vertical.TScrollbar")
+        w.sent_text.configure(yscrollcommand=scroll.set)
+        w.sent_text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        def toggle():
+            if shown.get():
+                fold.pack_forget()
+            else:
+                fold.pack(fill="x", before=w.note)
+            shown.set(not shown.get())
+            w.fold_button.set(text="What will be sent  ▾" if shown.get() else "What will be sent  ▸")
+        w.fold_button = Button(w, th, text="What will be sent  ▸", kind="secondary", width=200, height=32, radius=10,
+                               size=11, command=toggle, bg=BG)
+        w.fold_button.pack(anchor="w", pady=(th.px(8), th.px(6)))
+        w.note = tk.Label(w, text="No pictures are sent. To add a picture, use Report on GitHub.", bg=BG, fg=FAINT,
+                          font=th.font("regular", 11), wraplength=th.px(520), justify="left")
+        w.note.pack(anchor="w")
+        w.status = tk.Label(w, text="", bg=BG, fg=DIM, font=th.font("regular", 11), wraplength=th.px(520), justify="left")
+        w.status.pack(anchor="w", pady=(th.px(6), 0))
+        buttons = tk.Frame(w, bg=BG)
+        buttons.pack(fill="x", pady=(th.px(10), 0))
+        w.cancel_button = Button(buttons, th, text="Cancel", kind="secondary", width=96, height=38, radius=11, size=12,
+                                 command=w.destroy, bg=BG)
+        w.cancel_button.pack(side="right")
+        w.send_button = Button(buttons, th, text="Send", kind="primary", width=96, height=38, radius=11, size=12,
+                               command=lambda: self._submit_report(w), bg=BG)
+        w.send_button.pack(side="right", padx=(0, th.px(8)))
+        self._report_window = w
+        w.message.focus_set()
+        return w
+
+    def _submit_report(self, w):
+        """Send was clicked: check the text and the daily limit, then post in the background."""
+        def say(text, bad=True):
+            w.status.configure(text=text, fg=BAD if bad else GOOD)
+        message = w.message.get("1.0", "end-1c")
+        problem = report.message_problem(message)
+        if problem:
+            return say(problem)
+        if reports_sent_today(self.cfg) >= MAX_REPORTS_PER_DAY:
+            return say("You've sent 3 reports today. Please try again tomorrow, or use Report on GitHub.")
+        if sharing_blocked():
+            return say("Sending is off while testing.")
+        if healthlog.ensure_id(self.cfg):
+            save_config(self.cfg)
+        body = report.report_body(self.cfg["health_id"], VERSION, message, w.details)
+        w.send_button.set(enabled=False)
+        say("Sending...", bad=False)
+
+        def work():
+            try:
+                outcome = post_report(body)
+            except Exception:
+                outcome = "later"
+            self.q.put(("report_sent", (w, outcome)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _report_done(self, w, outcome):
+        """The site answered a Send report."""
+        if not w.winfo_exists():
+            if outcome == "ok":
+                self._count_report()
+            return
+        texts = {"limit": "You've sent 3 reports today. Please try again tomorrow, or use Report on GitHub.",
+                 "message": "Please leave out links.",
+                 "bad": "The site couldn't take this report. Please use Report on GitHub instead.",
+                 "later": "Couldn't send it. Are you connected to the internet?"}
+        if outcome == "ok":
+            self._count_report()
+            w.status.configure(text="Sent, thank you!", fg=GOOD)
+            w.cancel_button.set(text="Close")
+            return
+        if outcome == "limit":
+            self.cfg["reports_sent"] = {"day": healthlog.utc_day(time.time()), "n": MAX_REPORTS_PER_DAY}
+            save_config(self.cfg)
+        w.status.configure(text=texts.get(outcome, texts["later"]), fg=BAD)
+        w.send_button.set(enabled=True)
+
+    def _count_report(self):
+        self.cfg["reports_sent"] = {"day": healthlog.utc_day(time.time()), "n": reports_sent_today(self.cfg) + 1}
+        save_config(self.cfg)
+
     @staticmethod
     def _private(text):
-        """Without your Windows user name (it's in file paths)."""
-        for secret in {str(Path.home()), os.environ.get("USERNAME", "")}:
-            if len(secret) > 2:
-                text = text.replace(secret, "<you>")
-        return text
+        """Nothing personal: file paths cut to their last part, and the Windows or macOS user name and the
+        computer name taken out wherever they appear (see report.scrub)."""
+        names = [Path.home().name, os.environ.get("USERNAME", ""), os.environ.get("USER", ""),
+                 os.environ.get("LOGNAME", ""), os.environ.get("COMPUTERNAME", ""), platform.node()]
+        return report.scrub(text, names)
 
     def _report_facts(self):
         """Everything a bug report says, as a plain dict (see report.py)."""

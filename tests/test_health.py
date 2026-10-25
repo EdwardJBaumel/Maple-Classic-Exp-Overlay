@@ -231,5 +231,50 @@ for key, good, bad in (("share_health", True, "yes"), ("health_id", "0123456789a
 m.CONFIG_PATH.write_text("{}", encoding="utf-8")
 check("config: share_health missing means not asked yet", "share_health" not in m.load_config())
 
+# ---- Send report: the sender, the daily count, the settings
+report_body = {"id": "0123456789abcdef", "version": "0.9.14-beta", "message": "It stopped.", "details": "d"}
+real_urlopen = m.urllib.request.urlopen
+m.urllib.request.urlopen = fake_urlopen
+os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+sent.clear()
+try:
+    m.post_report(report_body)
+    blocked = False
+except RuntimeError:
+    blocked = True
+m.urllib.request.urlopen = real_urlopen
+check("while testing (MAPLE_EXP_DATA is set) a Send report can't reach the real site", blocked and not sent)
+
+os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
+try:
+    for code, data, wanted in ((200, {"ok": True}, "ok"), (400, {"error": "message"}, "message"),
+                               (400, {"error": "details"}, "bad"), (413, {}, "bad"), (429, {"retry": True}, "limit"),
+                               (500, {}, "later"), (404, {}, "later")):
+        sent.clear()
+        m.urllib.request.urlopen = answering(data, code)
+        check(f"Send report: answer {code} {data} is '{wanted}'", m.post_report(report_body) == wanted)
+    check("Send report posts to /api/report with exactly the four fields",
+          sent[0][0].endswith("/api/report") and set(json.loads(sent[0][1])) == {"id", "version", "message", "details"})
+
+    def offline(request, timeout=0):
+        raise m.urllib.error.URLError("no internet")
+    m.urllib.request.urlopen = offline
+    check("Send report: no internet is 'later', not a crash", m.post_report(report_body) == "later")
+finally:
+    m.urllib.request.urlopen = real_urlopen
+    os.environ.pop("MAPLE_EXP_ALLOW_SHARE", None)
+
+today = healthlog.utc_day(NOON)
+check("reports sent today: none recorded", m.reports_sent_today({}, NOON) == 0)
+check("reports sent today: counted for the same UTC day", m.reports_sent_today({"reports_sent": {"day": today, "n": 2}}, NOON) == 2)
+check("reports sent today: yesterday's count is forgotten", m.reports_sent_today({"reports_sent": {"day": "2000-01-01", "n": 3}}, NOON) == 0)
+for good, bad in (({"day": "2026-10-25", "n": 2}, {"day": "2026-10-25", "n": "2"}), ({"day": "2026-10-25", "n": 0}, {"n": 1}),
+                  ({"day": "2026-10-25", "n": 1}, {"day": "2026-10-25", "n": -1}), ({"day": "x", "n": 3}, "3")):
+    m.CONFIG_PATH.write_text(json.dumps({"reports_sent": good}), encoding="utf-8")
+    kept = "reports_sent" in m.load_config()
+    m.CONFIG_PATH.write_text(json.dumps({"reports_sent": bad}), encoding="utf-8")
+    check(f"config: reports_sent {good} is kept and {bad} is dropped", kept and "reports_sent" not in m.load_config())
+m.CONFIG_PATH.write_text("{}", encoding="utf-8")
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
