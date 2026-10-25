@@ -648,7 +648,11 @@ for gh in (11, 14):
     check(f"A13-7: the same name is 'same', nothing is 'hidden', digits {gh} px",
           level_ocr.name_match(bean, print_of("beanguri", gh)) == "same" and level_ocr.name_match(bean, None) == "hidden")
     got = [level_ocr.name_match(bean, covered(print_of("beanguri", gh), *c)) for c in ((0.5, 1.0), (0.0, 0.5), (0.3, 0.7))]
-    check(f"...the same name with part of it covered is 'alike' ({got})", got == ["alike"] * 3)
+    check(f"...the same name with part of it covered is never 'different' (alike, or hidden when little shows) ({got})",
+          "different" not in got and got.count("alike") >= 2)
+    got = [level_ocr.name_match(bean, covered(print_of("beanguri", gh), *c)) for c in ((0.0, 0.8), (0.0, 0.95))]
+    check(f"...and with most of it covered (too little shows to tell) it is 'hidden', not 'different' ({got})",
+          got == ["hidden"] * 2)
     got = [level_ocr.name_match(bean, covered(soy, *c)) for c in ((0.5, 1.0), (0.0, 0.5), (0.3, 0.7))]
     check(f"...another name with part of it covered is still 'different' ({got})", got == ["different"] * 3)
     check("...and so is another name in full", level_ocr.name_match(bean, soy) == "different")
@@ -844,12 +848,13 @@ try:
     r.read(fscreen)
     tail = m.ERROR_LOG_PATH.read_text()[len(log_after):]
     check("...after 10 minutes it is written again, with the number skipped", "4 more failures skipped" in tail)
-    m.read_map_name = real_map
+    m.read_map_name = lambda img, g: "Henesys"      # (works again; the real one needs Tesseract, which CI may not have)
     clock[0] += 1.5
     r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
     got = r.read(fscreen)
     clock[0] += 1.5
     got = r.read(fscreen)
+    m.read_map_name = real_map
     check("a part that works again loses its note", "Map names" not in (got.note or ""))
 
     # the potion bar and the mesos reader raising

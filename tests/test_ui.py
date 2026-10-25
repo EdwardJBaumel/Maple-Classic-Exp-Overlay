@@ -1049,6 +1049,17 @@ for _ in range(3):
     app._handle(pct_at(51.0))
 check("...half of another name resets, as a clearly different character", app.tracker.req is None and app.other_char_at is not None)
 app.reset()
+start_pct()
+app.reader.name_print = print_of("beanguri")
+app._handle(pct_at(51.0))
+for _ in range(3):
+    mostly = print_of("beanguri").copy()
+    mostly[:, :int(mostly.shape[1] * 0.95)] = 0
+    app.reader.name_print = mostly
+    app._handle(pct_at(51.0))
+check(f"...most of the name covered (too little to tell) keeps the session and says it's covered ({app.status.get()!r})",
+      app.tracker.req == 95700 and "covered" in app.status.get() and app.other_char_at is None)
+app.reset()
 
 # ---- Report a bug > Send to the developer
 def new_windows(before):

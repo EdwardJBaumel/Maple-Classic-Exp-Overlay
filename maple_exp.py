@@ -5653,6 +5653,10 @@ class App:
         self._char_seen = cur
         self.name_note = ""
         match = "same" if self._char_print is None else level_ocr.name_match(self._char_print, cur)
+        if match == "hidden":                        # (so little shows it can't tell: like a covered name, never a reset)
+            self._same_char = False
+            self.name_note = "Most of the name under your character is covered, so it can't tell if it's the same character. Move what covers it."
+            return False
         if match in ("same", "alike"):
             self._same_char = self._char_print is not None
             self._char_print, self._char_diff = (cur if self._char_print is None else self._char_print), 0
