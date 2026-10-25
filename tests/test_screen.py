@@ -893,5 +893,59 @@ ox, oy = exp_font.text_origin(2560, 1440)
 check("the first digit of the bar lands where it was measured at 1440p (about 1403.7, 1387.5)",
       abs(ox - 1403.65) < 0.3 and abs(oy - 1387.5) < 0.3)
 
+# ---- finder v2: finds the bar by shape and brightness, not by colour
+from pics import relabelled  # noqa: E402
+TPL = m.DigitTemplates.load()
+
+
+def v2_read(pic):
+    lay = m.find_exp_v2(pic)
+    return (lay, m.read_layout(TPL, lay)) if lay else (None, None)
+
+
+def tinted(bgr, scale):
+    return np.clip(bgr.astype(np.float32) * np.array(scale, np.float32), 0, 255).astype(np.uint8)
+
+
+for f in sorted(FRAMES.glob("exp_*.png")):
+    bar, size = cv2.imread(str(f)), f.stem[4:]
+    old = m.find_exp(bar)
+    lay, got = v2_read(bar)
+    check(f"v2 finds the bar and reads 68601 [71.68%], {size}", lay is not None and got == (68601, 71.68))
+    check(f"...in the same place and size as the colour finder, {size}",
+          abs(lay.cy - old.cy) <= 1 and abs(lay.gh - old.gh) <= 1 and len(lay.exp) == len(old.exp) and len(lay.pct) == len(old.pct))
+    grey = cv2.cvtColor(cv2.cvtColor(bar, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+    check(f"a greyscale screen is still read, {size} (the colour finder gives up)",
+          v2_read(grey)[1] == (68601, 71.68) and m.find_exp(grey) is None)
+    check(f"a warm night-light tint is still read, {size}", v2_read(tinted(bar, (0.55, 0.85, 1.0)))[1] == (68601, 71.68))
+    hsv = cv2.cvtColor(bar, cv2.COLOR_BGR2HSV)
+    green = (hsv[..., 1] >= 90) & (hsv[..., 2] >= 110) & (hsv[..., 0] >= 26) & (hsv[..., 0] <= 50)
+    hsv[..., 0] = (hsv[..., 0].astype(int) + 30) % 180                      # +60 degrees: the brackets are no longer green
+    check(f"brackets of another colour are still found, {size}", v2_read(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR))[1] == (68601, 71.68))
+    pale = bar.copy()
+    pale[green] = (225, 232, 225)                                           # a bracket as white as a digit
+    check(f"a bracket as white as a digit is not read as a digit (the fake '1'), {size}", v2_read(pale)[1] == (68601, 71.68))
+    lay_p, got_p = v2_read(percent_only(bar))
+    check(f"a percentage-only bar gives a layout with no number, {size}", lay_p is not None and lay_p.exp == [] and len(lay_p.pct) >= 5)
+    for text in ("HP", "MP"):
+        check(f"a bar with a % but the label {text} instead of EXP. is not the EXP bar, {size}", m.find_exp_v2(relabelled(bar, text)) is None)
+    x0, x1 = int(old.box[0] - 4 * old.gh), int(old.box[2] + 2 * old.gh)
+    blank = bar.copy()
+    blank[int(old.cy - 1.6 * old.gh):int(old.cy + 1.6 * old.gh), x0:x1] = np.median(bar[:, :2].reshape(-1, 3), axis=0)
+    check(f"with the EXP block wiped out, HP and MP are not taken for it, {size}", m.find_exp_v2(blank) is None)
+    covered = bar.copy()
+    covered[int(old.cy - old.gh):int(old.cy + old.gh), int(old.box[0]):int(old.box[0] + 0.4 * (old.exp[-1][0] - old.box[0]))] = 60
+    c_lay, c_got = v2_read(covered)
+    c_old = m.find_exp(covered)
+    check(f"a half-covered number reads no better than with the colour finder (the tracker's level check does the rest), {size}",
+          c_got is None or c_got == (m.read_layout(TPL, c_old) if c_old else None))
+    b = old.box
+    hinted = m.find_exp_v2(bar, (b[0] - 30, old.cy - 3 * old.gh, b[2] + 30, old.cy + 3 * old.gh))
+    check(f"the remembered spot finds the same bar, {size}", hinted is not None and m.read_layout(TPL, hinted) == (68601, 71.68))
+    away = m.find_exp_v2(bar, (0, 0, 40, 40))
+    check(f"a wrong remembered spot falls back to the whole picture, {size}", away is not None and m.read_layout(TPL, away) == (68601, 71.68))
+check("a blank picture has no bar", m.find_exp_v2(np.full((200, 1000, 3), 40, np.uint8)) is None)
+check("noise has no bar", m.find_exp_v2(np.random.default_rng(3).integers(0, 255, (200, 1000, 3), dtype=np.uint8)) is None)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

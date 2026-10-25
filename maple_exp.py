@@ -528,6 +528,222 @@ def find_exp(bgr):
     return max((f for f in found if f.cy >= low - 0.5 * f.gh), key=lambda f: f.box[0])
 
 
+# ---- finder v2: shape, layout and contrast instead of fixed colours
+#
+# Works on brightness only (the brightest of B, G, R, like HSV "value"), so a colour change, a
+# paler bracket or a greyscale screen doesn't matter. Text is whatever is clearly brighter than its
+# surroundings; a bracket is a stroke with two short feet; the EXP block is the one with a "%" sign
+# before its "]" (HP and MP have "/").
+
+V2_TEXT = 0.12      # how far above its surroundings text must be (share of how bright the brightest text is)
+V2_FAINT = 0.07     # ...and for the thin, paler brackets
+
+
+def _v2_brightness(bgr):
+    """Brightest of B, G, R per pixel (what HSV calls value): white digits and green brackets alike."""
+    b, g, r = cv2.split(bgr)
+    return cv2.max(cv2.max(b, g), r)
+
+
+def _v2_text_mask(V, width=None):
+    """(text, faint): pixels clearly brighter than the local average, and a second mask that also takes
+    the paler ones (brackets); None if nothing in the picture is bright enough to be text. The local
+    average is taken over about 3 digit heights."""
+    k = int(min(63, max(31, 0.0165 * (width or V.shape[1])))) | 1
+    D = cv2.subtract(V, cv2.blur(V, (k, k), borderType=cv2.BORDER_REPLICATE))
+    hist = cv2.calcHist([D], [0], None, [256], [0, 256]).ravel().cumsum()
+    top = int(np.searchsorted(hist, 0.997 * hist[-1]))
+    if top < 25:
+        return None
+    return D >= V2_TEXT * top, D >= V2_FAINT * top
+
+
+def _v2_has_feet(V, b):
+    """True if the stroke at blob b has short feet: more brightness in its top and bottom fifth than in
+    its middle (a digit "1" or a letter "l" has a plain end)."""
+    x0, x1 = max(0, b.x - 2), b.x + b.w + 2
+    win = V[max(0, b.y - 1):b.y + b.h + 1, x0:x1].astype(np.float32)
+    win = (win - win.min(axis=1, keepdims=True)).sum(axis=1)[1:-1]
+    z = max(2, int(round(0.2 * len(win))))
+    if len(win) < 2 * z + 1:
+        return False
+    return min(win[:z].mean(), win[-z:].mean()) >= 1.12 * max(float(np.median(win[z:-z])), 1.0)
+
+
+def _v2_bracket_side(sub, V, b):
+    """'[' or ']' if the blob mask (bool, h x w) is a thin vertical stroke with feet at the top and the
+    bottom pointing inwards; '|' if the feet are there but the side can't be told (a small or blurred
+    bracket); else None."""
+    h, w = sub.shape
+    if h < 5 or w < 2 or w > 0.6 * h:
+        return None
+    col = sub.sum(axis=0)
+    half = max(1, (w + 1) // 2)
+    left, right = col[:half].max(), col[w - half:].max()
+    if max(left, right) < 0.7 * h or not _v2_has_feet(V, b):
+        return None
+    if left >= 0.7 * h and right <= 0.5 * h:
+        return "["
+    if right >= 0.7 * h and left <= 0.5 * h:
+        return "]"
+    return "|"
+
+
+def _v2_merge_pieces(blobs, bh):
+    """Pieces of one glyph become one blob (a "%" often breaks into the two circles and the slash, or into
+    a left and a right half), as long as the whole is no bigger than a glyph: 1.2 x bh tall, 1.4 x bh wide."""
+    out = []
+    for b in sorted(blobs, key=lambda b: b.x):
+        for k, o in enumerate(out):
+            x, y = min(o.x, b.x), min(o.y, b.y)
+            w, h = max(o.x + o.w, b.x + b.w) - x, max(o.y + o.h, b.y + b.h) - y
+            ov = min(o.x + o.w, b.x + b.w) - max(o.x, b.x)
+            tall = min(o.h, b.h) >= 0.6 * bh
+            if (ov >= 0.5 * min(o.w, b.w) or (ov >= 1 and tall)) and h <= 1.2 * bh and w <= 1.4 * bh:
+                out[k] = Blob(o.i, x, y, w, h)
+                break
+        else:
+            out.append(b)
+    return out
+
+
+def _v2_is_percent(hi, b):
+    """True if the blob looks like "%": ink in the top-left and bottom-right corners (a "/" has it the other way)."""
+    sub = hi[b.y:b.y + b.h, b.x:b.x + b.w]
+    h2, w2 = max(1, b.h // 2), max(1, b.w // 2)
+    tl, br = sub[:h2, :w2].sum(), sub[b.h - h2:, b.w - w2:].sum()
+    tr, bl = sub[:h2, b.w - w2:].sum(), sub[b.h - h2:, :w2].sum()
+    return tl + br > 1.1 * (tr + bl) and tl > 0 and br > 0
+
+
+def find_exp_v2(bgr, hint=None):
+    """Locate the EXP text in a screenshot by shape and contrast, not colour. Returns a Layout
+    (the same as find_exp) or None. hint is a box (x0, y0, x1, y1) where the bar was last seen: it
+    is searched first (the Layout's box and cy say where it was found, to remember for next time)."""
+    if hint is not None:
+        H, W = bgr.shape[:2]
+        x0, y0, x1, y1 = hint
+        x0, y0, x1, y1 = max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1))
+        if x1 - x0 > 8 and y1 - y0 > 8:
+            lay = _find_exp_v2(bgr[y0:y1, x0:x1], W)
+            if lay:
+                V = np.zeros(bgr.shape[:2], np.float32)         # only the searched box is filled in: all the digits need
+                V[y0:y1, x0:x1] = lay.V
+                sh = lambda cells: [(c[0] + x0, c[1], c[2]) for c in cells]
+                b = lay.box
+                return Layout(lay.gh, lay.cy + y0, sh(lay.exp), sh(lay.pct),
+                              (b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0), V)
+    return _find_exp_v2(bgr)
+
+
+def _v2_bracket_candidates(mask, V8, have):
+    """Brackets in a text mask: thin tall blobs that have a partner of the same height to their right on
+    the same line (and whose feet and stroke look right). Skips ones already in have."""
+    n, glabels, stats, _ = cv2.connectedComponentsWithStats(mask.view(np.uint8), connectivity=8)
+    thin = np.nonzero((stats[:, 3] >= 5) & (stats[:, 2] <= 0.6 * stats[:, 3]))[0]
+    thin = thin[thin > 0]
+    if len(thin) < 2:
+        return []
+    x, y, h = stats[thin, 0], stats[thin, 1], stats[thin, 3]
+    dx = x[None, :] - x[:, None]
+    pair = ((dx >= 3 * h[:, None]) & (dx <= 9 * h[:, None]) & (np.abs(y[None, :] - y[:, None]) <= 0.3 * h[:, None])
+            & (np.abs(h[None, :] - h[:, None]) <= 0.25 * h[:, None]))
+    keep = thin[pair.any(axis=1) | pair.any(axis=0)]
+    out = []
+    for i in keep:
+        b = Blob(int(i), *map(int, stats[i][:4]))
+        if any(abs(k.x - b.x) <= 2 and abs(k.y - b.y) <= 2 for k, _ in have):
+            continue
+        side = _v2_bracket_side(glabels[b.y:b.y + b.h, b.x:b.x + b.w] == b.i, V8, b)
+        if side:
+            out.append((b, side))
+    return out
+
+
+def _find_exp_v2(bgr, width=None):
+    V8 = _v2_brightness(bgr)
+    masks = _v2_text_mask(V8, width)
+    if masks is None:
+        return None
+    low, faint = masks
+    brackets = _v2_bracket_candidates(low, V8, [])
+    lay = _v2_pair_up(low, V8, brackets)
+    if lay is None:                    # a blur can cut the paler brackets short: look again with the softer mask
+        brackets += _v2_bracket_candidates(faint, V8, brackets)
+        lay = _v2_pair_up(low, V8, brackets)
+    return lay
+
+
+def _v2_pair_up(low, V8, brackets):
+    """The Layout of the EXP block among the bracket candidates, or None."""
+    # Only the rows where two brackets could pair up are looked at closely.
+    rows = [(a.y - a.h, a.y + 2 * a.h) for a, _ in brackets for c, _ in brackets
+            if 3 * a.h <= c.x - a.x <= 9 * a.h and abs(a.y - c.y) <= 0.3 * a.h]
+    if not rows:
+        return None
+    y0, y1 = max(0, min(r[0] for r in rows)), min(low.shape[0], max(r[1] for r in rows))
+    band = low[y0:y1].copy()
+    # a bracket's pixels are never part of a digit
+    for b, _ in brackets:
+        band[max(0, b.y - y0):max(0, b.y + b.h - y0), b.x:b.x + b.w] = False
+    _, wblobs = _blobs(band)
+    wblobs = [Blob(b.i, b.x, b.y + y0, b.w, b.h) for b in wblobs]
+    V = V8.astype(np.float32)
+    strokes = [b for b, _ in brackets]
+    opens = sorted((b for b, s in brackets if s != "]"), key=lambda b: b.x)
+    closes = sorted((b for b, s in brackets if s != "["), key=lambda b: b.x)
+    found = []
+    for o in opens:
+        bh, cy = o.h, o.y + o.h / 2
+        on_line = lambda b: abs(b.y + b.h / 2 - cy) <= 0.3 * bh
+        right = [c for c in closes if c.x > o.x + o.w and c.x - o.x <= 9 * bh
+                 and on_line(c) and abs(c.h - bh) <= 0.25 * bh]
+        if not right:
+            continue
+        c = right[0]
+        near = [b for b in wblobs if abs(b.y + b.h / 2 - cy) <= 0.8 * bh and o.x - 12 * bh <= b.x <= c.x + c.w]
+        near = _v2_merge_pieces([b for b in near if b.h <= 1.3 * bh], bh) + [b for b in near if b.h > 1.3 * bh]
+        line = [b for b in near if on_line(b) and b.h >= 0.6 * bh]
+        inside = sorted((b for b in line if b.x >= o.x + o.w and b.x + b.w <= c.x), key=lambda b: b.x)
+        if len(inside) < 3 or any(b.h > 1.25 * bh for b in inside):
+            continue
+        # the "%" sign right before "]": that's what tells EXP from HP and MP
+        last = inside[-1]
+        if not (0.9 * bh <= last.w <= 1.4 * bh and _v2_is_percent(low, last)):
+            continue
+        dh = float(np.median([b.h for b in inside]))
+        run, edge = [], o.x
+        for b in sorted((b for b in line if b.x + b.w <= o.x), key=lambda b: -b.x):
+            if edge - (b.x + b.w) > 2.0 * bh or b.h > 1.25 * bh or b.h > 1.15 * dh or b.w < 0.2 * dh:
+                break                                     # (a sliver is a piece of the label's thick letters, not a digit)
+            if any(b.x + b.w <= k.x and k.x + k.w <= edge and on_line(k) for k in strokes):
+                break                                     # another bracket in the way: the number stops here
+            run.append(b)
+            edge = b.x
+        if not run:
+            # No number: only "EXP. [58.47%]" is left once the EXP is big. The label's dot says it's EXP.
+            dot = _exp_label_dot(wblobs, o, bh)
+            if dot is None:
+                continue
+            heights = [b.h for b in inside if b.w <= 0.85 * b.h]
+            gh = float(np.median(heights)) if heights else float(bh)
+            found.append(Layout(gh, cy, [], _cells(inside, gh),
+                                (int(dot.x + 0.84 * gh), int(cy - bh), c.x + c.w, int(cy + bh)), V))
+            continue
+        run.reverse()
+        heights = [b.h for b in run + inside if b.w <= 0.85 * b.h]
+        gh = float(np.median(heights)) if heights else float(bh)
+        if not 5 <= gh <= 34:
+            continue
+        found.append(Layout(gh, cy, _cells(run, gh), _cells(inside, gh),
+                            (run[0].x, int(cy - bh), c.x + c.w, int(cy + bh)), V))
+    if not found:
+        return None
+    low_cy = max(f.cy for f in found)
+    # the lowest line; if a digit "1" passed for the "[", the real "[" (further left) gives the longer number
+    return min((f for f in found if f.cy >= low_cy - 0.5 * f.gh), key=lambda f: f.box[0])
+
+
 def digit_patch(V, cx, cy, gh, shift):
     """Brightness patch around one digit, rescaled so the digit is CANON px tall."""
     k = gh / CANON
