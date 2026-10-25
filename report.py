@@ -163,6 +163,29 @@ def summary(f):
     return "\n".join(lines + block + tail)
 
 
+def answer_text(a):
+    """An EXP answer for the text: "68,601 [71.68%]", "[58.47%]" (percentage only) or "nothing"."""
+    if not a:
+        return "nothing"
+    return f"[{a[1]:.2f}%]" if a[0] is None else f"{a[0]:,} [{a[1]:.2f}%]"
+
+
+def shadow_lines(s):
+    """The "Reader v2 (test)" part of the details: what the new reader did beside the old one."""
+    c = s.get("counts") or {}
+    state = ("off in Settings" if not s.get("on") else "stopped (too slow here)" if s.get("stopped")
+             else "every other look (slow here)" if s.get("thinned") else "on")
+    out = [_kv("State", state),
+           _kv("Looks", ", ".join(f"{k} {c.get(k, 0)}" for k in ("agree", "disagree", "v2_only", "old_only", "neither", "skipped", "errors"))),
+           _kv("Own strip grabs", c.get("grabs", 0)),
+           _kv("Time per look", f"v2 {s.get('v2_ms')} ms, old reader {s.get('old_ms')} ms" if s.get("v2_ms") is not None else "not measured yet")]
+    last = s.get("last")
+    out.append(_kv("Last answers", f"old {answer_text(last[0])}, v2 {answer_text(last[1])}" if last else "none yet"))
+    for old, new in s.get("diffs") or []:
+        out.append(_kv("Disagreed", f"old {answer_text(old)}, v2 {answer_text(new)}"))
+    return out
+
+
 def details(f):
     """Everything, for the text file that's dragged into the report."""
     g, rd, over, h, t = (f.get(k) or {} for k in ("game", "reader", "overlay", "health", "tesseract"))
@@ -203,6 +226,7 @@ def details(f):
             _kv("Time per look", f"{int(h.get('average_ms') or 0)} ms average, {int(h.get('max_ms') or 0)} ms slowest, last {int(h.get('last_ms') or 0)} ms"),
             _kv("Last look finished", f"{int(h['age'])} s ago" if h.get("age") is not None else "never"),
             _kv("Last error", h.get("last_error") or "none"), ""]
+    out += ["== Reader v2 (test) =="] + shadow_lines(f.get("shadow") or {}) + [""]
     out += ["== Settings ==", _kv("Settings", ", ".join(f"{k} {v}" for k, v in s.items())), ""]
     wrong = looks_wrong(f)
     out += ["== Things that look wrong =="] + ([f"- {w}" for w in wrong] if wrong else ["- Nothing stands out."]) + [""]

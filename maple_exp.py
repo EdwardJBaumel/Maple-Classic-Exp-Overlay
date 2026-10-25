@@ -50,12 +50,14 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from capture import ScreenCapture, as_capture, grab  # noqa: F401
-import digits_v2  # noqa: F401  (the digit reader v2: shadow mode uses it)
+import digits_v2
+import exp_font
 import healthlog
 import level_ocr
 import ocr
 import potions
 import report
+import shadow
 from platforms import create_platform, hotkey_text, parse_hotkey
 from report import Health, Recent
 from ui_gfx import INK, TEXT_DIM
@@ -106,6 +108,7 @@ POTION_SECONDS = 3          # how often the potion bar is read (a small picture,
 POTION_FULL_LOOK = 15       # every this many reads the bar is looked for over its whole search range again
 OUTLINE_SECONDS = 8         # how often the (costly) search for a see-through mesos box may run
 LEVEL_RECHECK_SECONDS = 30  # a level read from the badge is looked at again this often (it only changes at a level-up)
+V2_SPOTS_MAX = 8            # window sizes whose reader v2 spot is remembered in the config
 PART_LOG_SECONDS = 600      # a reading part that keeps failing is written to errors.log this often at most
 PART_NOTE_SECONDS = 120     # ...and its status note stays this long after its last failure
 PART_NOTES = {              # what the status line says while a part of the reading fails
@@ -123,7 +126,7 @@ LEVEL_FAILS_FOR_FALLBACK = 3    # badge reads that failed in a row before typing
 DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "check_updates": True, "skip_version": "", "ui_scale": 100, "compact": False, "hotkeys_on": True,
             "details": False, "compact_shape": "square", "seen_version": "",
-            "potions_on": True, "potion_prices": {}}
+            "potions_on": True, "potion_prices": {}, "shadow_reader": True}
 SHAPE_LABELS = {"square": "Square", "wide": "Wide", "bar": "Bar"}
 SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and Start/Pause.",
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
@@ -223,6 +226,13 @@ def log_error(what, exc=None):
         pass
 
 
+def good_v2_spots(v):
+    """exp_v2_spots in the config: {"WxH/gh": [x0, y0, x1, y1]}, a few at most."""
+    return (isinstance(v, dict) and len(v) <= V2_SPOTS_MAX
+            and all(isinstance(k, str) and re.fullmatch(r"\d{3,5}x\d{3,5}/\d{1,2}", k) and isinstance(b, list)
+                    and len(b) == 4 and all(type(x) is int for x in b) for k, b in v.items()))
+
+
 def load_config():
     """The saved settings, with anything missing or damaged replaced by the defaults."""
     try:
@@ -257,6 +267,7 @@ def load_config():
               "share_runs": lambda v: type(v) is bool,       # missing: not asked yet
               "share_health": lambda v: type(v) is bool,     # (same: the daily health report)
               "health_id": healthlog.good_id,
+              "exp_v2_spots": good_v2_spots,                  # (where reader v2 found the bar, by window size)
               "reports_sent": lambda v: isinstance(v, dict) and isinstance(v.get("day"), str) and type(v.get("n")) is int and v["n"] >= 0}
     for key, ok in checks.items():
         if key in cfg and cfg[key] is not None and not ok(cfg[key]):
@@ -1652,14 +1663,16 @@ def find_party_bars(bgr, gh, hsv=None):
 # --------------------------------------------------------------------------- finding it on screen
 
 Reading = namedtuple("Reading", "where candidates confident text image boxes map note "
-                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms",
+                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms shadow v2_at",
                      defaults=((), False, "", None, (), None, None, None, None, (), None, None, None, None, False, None,
-                               None, (), None))
+                               None, (), None, None, None))
 # percent_only: the bar shows just "[58.47%]" (candidates are then [(None, pct)]); level: the level read
 # from the status bar's LV badge, with where it came from, as (level, source), or None
 # exp_kind, tries and ms are for health reports (healthlog.py): how the EXP look went (read, tesseract, unclear,
 # not_found, covered or no_window), which other readers tried during the look as (part, worked) pairs, and
 # how long the look took in milliseconds
+# shadow and v2_at are for shadow mode (shadow.py): (what happened, v2's milliseconds), and (key, box) when reader v2
+# found the bar in a new place, to remember in the config
 
 
 def _view(img, lay):
@@ -1739,6 +1752,10 @@ class ScreenReader:
         self.error_types = Counter()        # ...and by exception type name (never the message)
         self.part_failed_at = {}            # part -> when it last failed, until a later try works
         self._part_logged = {}              # part -> (when errors.log last heard of it, failures skipped since)
+        self.shadow = shadow.Shadow(find_exp_v2, digits_v2.read_layout_v2, fits_exp_table, exp_font.load, _view,
+                                    lambda exc: self._part_failed("reader v2", exc))      # reader v2, beside this one
+        self.saved_v2 = {}                  # "WxH/gh" -> where reader v2 found the bar last time (from the config)
+        self.v2_spot = None                 # ...and where it has found it in this game window (x0, y0, x1, y1)
 
     @contextlib.contextmanager
     def _part(self, part):
@@ -1797,6 +1814,7 @@ class ScreenReader:
 
     def _forget_places(self):
         self.box, self.misses = None, 0
+        self.v2_spot = None
         self.map_box, self.map_print = None, None
         self.mesos_box = self.saved_mesos = None
         self.mesos_fails, self.mesos_count, self.mesos_pending = 0, None, (None, 0)
@@ -1981,6 +1999,7 @@ class ScreenReader:
         rect = PLATFORM.client_rect(self.hwnd) if self.hwnd else None
         if rect and rect[2:] != self.size:                  # resized: find everything again
             self.size, self.box, self.map_box, self.gh = rect[2:], None, None, None
+            self.v2_spot = None
             self.exp_anchor, self.next_job_read = None, 0.0
             self.mesos_box, self.party_area, self.next_scan = None, None, 0.0
             self.window, self.window_until, self.window_box = None, 0.0, False
@@ -2035,12 +2054,14 @@ class ScreenReader:
         capture = self.capture = as_capture(capture)
         wx, wy, ww, wh = rect
         where = f"MapleStory window {ww}x{wh}"
+        started = time.perf_counter()
         if self.box:
             bx, by, bw, bh = self.box
             if self._blocked(wx + bx, wy + by, bw, bh):
                 return Reading("This window is covering the EXP bar. Move it.", exp_kind="covered")
             shot = capture.grab(wx + bx, wy + by, bw, bh)
             reading, lay = self._read(shot, where)
+            reading = self._shadow_look(capture, rect, shot, reading, lay, started)
             if reading.confident:
                 self.misses = 0
                 self._remember(lay, rect, shot)
@@ -2062,20 +2083,65 @@ class ScreenReader:
             lay = find_exp(shot[0]) if shot else None
         if not lay:
             if self._blocked(wx, wy + top, ww, wh - top):
-                return Reading("Can't find the EXP bar. Is this window covering it?", exp_kind="covered")
-            return Reading("Can't find the EXP bar at the bottom of the game. Is something covering it?",
-                           exp_kind="not_found")
+                reading = Reading("Can't find the EXP bar. Is this window covering it?", exp_kind="covered")
+            else:
+                reading = Reading("Can't find the EXP bar at the bottom of the game. Is something covering it?",
+                                  exp_kind="not_found")
+            return self._shadow_look(capture, rect, shot, reading, None, started)     # (v2 may still see it)
         img, sx, sy = shot
         g = lay.gh
         lead = g if lay.exp else 5.5 * g       # (a %-only bar is found by its label, so the label stays in the spot)
         x0, x1 = max(0, int(lay.box[0] - lead)), min(img.shape[1], int(lay.box[2] + 6 * g))
         y0, y1 = max(0, int(lay.cy - 1.4 * g)), min(img.shape[0], int(lay.cy + 1.4 * g))
         reading, lay = self._read(shot, where, lay)
+        reading = self._shadow_look(capture, rect, shot, reading, lay, started)
         if reading.confident:             # only remember a spot whose digits match the game font
             self.box = (sx - wx + x0, sy - wy + y0, x1 - x0, y1 - y0)
             self.misses = 0
             self._remember(lay, rect, shot)
         return reading
+
+    def _shadow_look(self, capture, rect, shot, reading, lay, started):
+        """Runs reader v2 on the picture just read and notes in the Reading how the two compare (shadow.py).
+        It only adds to the Reading's shadow and v2_at, never changes what was read."""
+        if not shot or not self.shadow.on:
+            return reading
+        wx, wy, ww, wh = rect
+        old_img, ox, oy = shot[0], shot[1] - wx, shot[2] - wy      # where this picture sits in the game window
+        img = old_img
+        key = f"{ww}x{wh}/{round(lay.gh) if lay else round(self.gh or 0)}"
+        spot = self.v2_spot or self.saved_v2.get(key)
+        hint = None
+        if spot:
+            x0, y0, x1, y1 = max(0, spot[0]), max(0, spot[1]), min(ww, spot[2]), min(wh, spot[3])
+            if x1 - x0 > 8 and y1 - y0 > 8:
+                if ox <= x0 and oy <= y0 and x1 <= ox + img.shape[1] and y1 <= oy + img.shape[0]:
+                    hint = (x0 - ox, y0 - oy, x1 - ox, y1 - oy)       # the picture holds its spot
+                elif not self._blocked(wx + x0, wy + y0, x1 - x0, y1 - y0):
+                    own = self._hide_own(capture.grab(wx + x0, wy + y0, x1 - x0, y1 - y0))      # (a small crop of its own)
+                    if own:
+                        self.shadow.counts["grabs"] += 1
+                        img, ox, oy = own[0], own[1] - wx, own[2] - wy
+        top = int(wh * (1 - SEARCH_STRIP))
+
+        def strip():                                # (the bottom strip, if the picture didn't hold the bar)
+            if self._blocked(wx, wy + top, ww, wh - top):
+                return None
+            big = self._hide_own(capture.grab(wx, wy + top, ww, wh - top))
+            return (big[0], big[1] - wx - ox, big[2] - wy - oy) if big else None
+
+        old = reading.candidates[0] if reading.confident and reading.candidates else None
+        small = img.shape[0] < wh - top or img.shape[1] < ww       # (a picture that already is the strip needs no other)
+        res = self.shadow.look(img, old, (time.perf_counter() - started) * 1000, lay, hint, strip if small else None, old_img)
+        if res is None:
+            return reading
+        at = None
+        if res.spot:
+            box = (res.spot[0] + ox, res.spot[1] + oy, res.spot[2] + ox, res.spot[3] + oy)
+            if self.v2_spot is None or max(abs(a - b) for a, b in zip(box, self.v2_spot)) > 3:
+                self.v2_spot = box
+                at = (key, list(box))
+        return reading._replace(shadow=(res.category, res.ms), v2_at=at)
 
     def _read(self, shot, where, lay=None):
         """Returns (Reading, Layout or None). Its exp_kind (for health reports): read = the templates gave a
@@ -3991,6 +4057,8 @@ class App:
         saved = self.cfg.get("mesos_box")
         if isinstance(saved, list) and len(saved) == 6:
             self.reader.saved_mesos = tuple(saved)
+        self.reader.saved_v2 = dict(self.cfg.get("exp_v2_spots") or {})
+        self.reader.shadow.on = self.cfg["shadow_reader"]           # (reader v2 in shadow mode: off with shadow_reader false)
         self.session = Session(self.cfg["gap_seconds"])
         self.tracker, self.meso = self.session.exp, self.session.meso
         self.party = 1
@@ -5159,7 +5227,7 @@ class App:
         if rect and gh:
             game = (rect[2], rect[3], any(rect[2] == w and rect[3] == h for w, h, _ in self._health_monitors), gh)
         self.healthlog.look(healthlog.kind_of(r), r.percent_only, r.tries, r.ms,
-                            (now - last) if last is not None and self.tracker.running else 0.0, game)
+                            (now - last) if last is not None and self.tracker.running else 0.0, game, r.shadow)
 
     def _health_snapshot(self):
         """What the setup is like today (recorded while the game is there, not when the report is sent)."""
@@ -5331,6 +5399,13 @@ class App:
         if r.mesos_at:                                  # remember where the mesos box is
             self.cfg["mesos_box"] = list(r.mesos_at)
             self.reader.saved_mesos = tuple(r.mesos_at)
+            save_config(self.cfg)
+        if r.v2_at:                                     # ...and where reader v2 found the EXP bar
+            key, box = r.v2_at
+            spots = {k: v for k, v in (self.cfg.get("exp_v2_spots") or {}).items() if k != key}
+            spots[key] = list(box)
+            self.cfg["exp_v2_spots"] = dict(list(spots.items())[-V2_SPOTS_MAX:])
+            self.reader.saved_v2 = dict(self.cfg["exp_v2_spots"])
             save_config(self.cfg)
         if r.bar is not None:
             self.potion_bar = r.bar
@@ -6039,6 +6114,7 @@ class App:
             "reader": {**{k: d[k] for k in ("exp_box", "exp_misses", "map_box", "mesos_box", "mesos_fails", "two_boxes",
                                             "mesos_learned", "party_area", "job_why")},
                        "level_unknown": t.req is None},
+            "shadow": self.reader.shadow.facts(),
             "health": {"alive": h.alive and self._worker_alive(), "polls": h.polls, "errors": h.errors,
                        "last_error": h.last_error, "average_ms": h.average_ms(), "max_ms": h.max_ms,
                        "last_ms": h.last_ms, "age": None if h.last_at is None else now - h.last_at},
@@ -6065,6 +6141,9 @@ class App:
         if mr:
             read = fmt_num(mr.mesos) if mr.mesos is not None else "nothing (waiting for a clear look)"
             shots.append((mr.mesos_image, mr.mesos_boxes, f"Mesos. Read: {read}"))
+        for kept in list(self.reader.shadow.kept):
+            shots.append((kept["image"], kept["boxes"], f"Reader v2 test ({kept['kind']}). Old: {report.answer_text(kept['old'])}"
+                                                        f"   v2: {report.answer_text(kept['v2'])}"))
         if r:
             shots.append(self._class_line())
             look = self.reader.map_look
