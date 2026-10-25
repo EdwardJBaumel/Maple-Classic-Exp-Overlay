@@ -349,6 +349,13 @@ check("macOS looks next to the program (Homebrew layout) first, then in Homebrew
 check("macOS passes --tessdata-dir only for a folder that isn't Tesseract's own default",
       mac.tessdata_arg(brew, Path("/opt/homebrew/share/tessdata")) == ""
       and Path(mac.tessdata_arg(brew, Path("/usr/local/share/tessdata"))).as_posix() == "/usr/local/share/tessdata")
+cellar = Path("/opt/homebrew/Cellar/tesseract/5.5.0/bin/tesseract")      # (a versioned Homebrew folder, if that is the program found)
+check("macOS: a program inside a versioned Cellar folder looks in that version's own share/tessdata first, passing nothing",
+      mac.tessdata_candidates(cellar)[0].as_posix() == "/opt/homebrew/Cellar/tesseract/5.5.0/share/tessdata"
+      and mac.tessdata_arg(cellar, mac.tessdata_candidates(cellar)[0]) == "")
+macports = Path("/opt/local/bin/tesseract")
+check("macOS: MacPorts' program finds /opt/local/share/tessdata beside it",
+      mac.tessdata_candidates(macports)[0].as_posix() == "/opt/local/share/tessdata")
 
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
