@@ -1812,6 +1812,11 @@ log, _ = new_log()
 t, _ = farm(log, 0, 1100, estimated=True, mesos_at=lambda t: (round(t * 10), t))
 check("an estimated run never waits for a mesos look, and keeps the seal an older overlay can't use",
       log.runs and all(not r.get("pending") and r["seal"] == "estimated" for r in log.runs) and log.unshared_runs() == [])
+log, _ = new_log()
+t, _ = farm(log, 0, 1000, estimated=True)
+r = log.runs[0]
+check(f"A13-3: estimated runs still count as done runs ({log.runs_done(r['map'], r['party'], r['class'])} of {len(log.runs)})",
+      log.runs_done(r["map"], r["party"], r["class"]) == len(log.runs))
 line = {"date": "2026-10-08", "map": "Rocky Road II", "level": 60, "party": 1, "class": "Bandit", "exp": 4000,
         "seconds": 1800, "mesos": 0, "mesos_seconds": 0}
 check("an estimated line says so in its row and in the copied text",

@@ -3813,10 +3813,12 @@ class AutoLog:
         return None if r is None or r["map"] is None else max(0.0, now - r["start"])
 
     def runs_done(self, map_name, party, job, day=None):
-        """How many runs were finished (sealed) on a day for a map, party size and class."""
+        """How many runs were finished (sealed) on a day for a map, party size and class. A run estimated from a %
+        alone carries the seal "estimated" instead: it counts here, it is just never shared."""
         day = day or date.today().isoformat()
         return sum(1 for r in self.runs if r.get("date") == day and r.get("map") == map_name
-                   and r.get("party") == party and r.get("class") == job and self.sealed(r, _SEALED_RUN))
+                   and r.get("party") == party and r.get("class") == job
+                   and (self.sealed(r, _SEALED_RUN) or (r.get("estimated") and r.get("seal") == "estimated")))
 
     def unshared_runs(self):
         """Finished runs (exactly as the overlay saved them) not shared yet: only clean ones
