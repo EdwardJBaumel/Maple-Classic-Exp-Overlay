@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.13-beta
+
+**Fewer reading problems**
+- One part that can't be read (map name, class, mesos, potions, level badge) never stops the others: EXP keeps reading, and the status line says which part is having trouble.
+- A stuck or missing Tesseract (the text reader) no longer freezes the EXP display, and the message says what's wrong and how to fix it (a missing `eng.traineddata`, or a folder name with unusual characters).
+- The overlay keeps starting even if a folder on your PC can't be looked into, and the reading tries again if Windows briefly refuses the screen capture.
+
+**High levels (a bar with only a percentage, about Lv 57+)**
+- Leveling up from the last level with an EXP number to the first one with only a % no longer gets stuck on "level changed".
+- Runs at these levels count in the log and on the overlay (they showed 0). They're still never shared.
+- A window over the LV badge now says so and offers Settings, Level fallback; Reset and switching to Select area forget the old level.
+- A partly covered name row no longer starts the session over by itself.
+
+**Health reports (your choice, off until you say yes)**
+- Once a day the overlay can send numbers about how well it reads your screen: how many looks read fine, screen and game size, how long a look takes, which error types happened. Never pictures, names, chat, map names or your log. It uses its own random ID, not linked to shared runs. It asks once; change it any time in Settings. See Privacy in the README.
+
+**Send a report without GitHub**
+- Report a bug, then **Send to the developer**: type what went wrong and send it. It shows exactly what is sent first. Text only, at most 3 a day.
+- Bug reports (both ways) now remove your Windows user name and folders from file paths in error messages too.
+
+**A new EXP reader, tested quietly**
+- A new way to find and read the EXP bar (by shape, not colour) runs in the background and only notes whether it agrees with the current one. It changes nothing you see; if it costs too much CPU on your PC it slows down or switches itself off.
+
 ## 0.9.12-beta
 
 **Hotfix: an EXP bar that shows only a percentage**

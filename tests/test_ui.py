@@ -389,8 +389,8 @@ for top in opened:
             texts.append(str(w0.cget("text")))
         except Exception:
             pass
-check("this version's What's new window opens and speaks of the percentage-only bar",
-      len(opened) == 1 and any("percentage" in t for t in texts))
+check("this version's What's new window opens and speaks of health reports",
+      len(opened) == 1 and any("Health reports" in t for t in texts))
 for top in opened:
     top.destroy()
 

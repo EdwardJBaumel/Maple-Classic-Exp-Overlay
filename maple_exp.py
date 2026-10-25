@@ -71,7 +71,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.12-beta"
+VERSION = "0.9.13-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -135,7 +135,19 @@ SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and St
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
                 "bar": "One thin strip with the main numbers and a slim level bar."}
 # What's new, shown once after updating to a version (plain words, newest changes only). A version with no entry shows nothing.
-WHATS_NEW = {"0.9.12-beta": (
+WHATS_NEW = {"0.9.13-beta": (
+    (None, None, (
+        ("head", "Fewer reading problems"),
+        "Reading keeps going when the map name or class can't be read, and a stuck text reader no longer freezes the display.",
+        "High levels (a bar with only a %): leveling up, run counts, a covered level badge and Reset work properly now.",
+        ("head", "Health reports (your choice)"),
+        "Once a day the overlay can send numbers about how well it reads your screen: never pictures, names, chat or your log. "
+        "It asks you first, and you can turn it off in Settings.",
+        ("head", "Send a report without GitHub"),
+        "Report a bug, then Send to the developer. You see exactly what is sent before it goes.",
+        ("head", "A new reader, tested quietly"),
+        "A new way to read the EXP bar runs in the background and only notes whether it agrees. It changes nothing you see.")),),
+    "0.9.12-beta": (
     (None, None, (
         ("head", "Hotfix for high levels"),
         "Past about Lv 57 (levels that need a million EXP or more), the game shows only a percentage on the EXP bar, with no EXP number. The overlay couldn't find the bar then. It does now.",

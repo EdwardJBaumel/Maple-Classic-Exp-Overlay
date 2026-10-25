@@ -303,6 +303,8 @@ check("the level comes from the EXP table", m.level_for_req(63666) == 27 and m.l
 # ---- updating: logs and settings from every released version open with nothing lost
 import shutil
 real_config = m.CONFIG_PATH
+HEALTH_FROM = (0, 9, 13)        # the first version that asks about health reports (its fixture has the answer)
+vt = lambda name: tuple(int(x) for x in name.split("-")[0].split("."))
 for old in sorted((Path(__file__).parent / "upgrade").iterdir()):
     folder = Path(tempfile.mkdtemp())
     shutil.copy2(old / "exp_log.json", folder / "log.json")
@@ -322,12 +324,12 @@ for old in sorted((Path(__file__).parent / "upgrade").iterdir()):
     # the health question is still to come (nothing answers it for them), and an answer, once saved, is kept
     m.CONFIG_PATH = Path(tempfile.mkdtemp()) / "config.json"
     shutil.copy2(old / "config.json", m.CONFIG_PATH)
-    asked_before = "share_health" not in m.load_config()
+    asked_before = ("share_health" not in m.load_config()) == (vt(old.name) < HEALTH_FROM)    # (or answered, from then on)
     cfg["share_health"] = True
     m.save_config(cfg)
     again = m.load_config()
     m.CONFIG_PATH = real_config
-    check(f"updating from {old.name}: the health question is still to be asked, and an answer saved after it is kept",
+    check(f"updating from {old.name}: the health question is asked only if that version never asked it, and an answer is kept",
           asked_before and again["share_health"] is True and again["gap_seconds"] == cfg["gap_seconds"] and again["pos"] == cfg["pos"])
     # ...and carrying on farming afterwards, with the old lines (and any notes on them) left as they were
     farm(log, 0, 310, map_name="Updated Map", level=41)
@@ -512,8 +514,9 @@ check("no test fixture has sharing switched on (a launch on one would send its m
 
 check("no test fixture has health reports switched on (a launch on one would send made-up numbers)",
       not any(json.loads(f.read_text(encoding="utf-8")).get("share_health") for f in (Path(__file__).parent / "upgrade").glob("*/config.json")))
-check("every upgrade fixture is asked about health reports (none has an answer yet)",
-      not any("share_health" in json.loads(f.read_text(encoding="utf-8")) for f in (Path(__file__).parent / "upgrade").glob("*/config.json")))
+check("every upgrade fixture from before health reports is asked about them (none has an answer yet)",
+      not any("share_health" in json.loads(f.read_text(encoding="utf-8")) for f in (Path(__file__).parent / "upgrade").glob("*/config.json")
+              if vt(f.parent.name) < HEALTH_FROM))
 
 # a copy of the log is kept for each day, so a recent one is always there
 folder = Path(tempfile.mkdtemp())
