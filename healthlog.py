@@ -228,14 +228,24 @@ class HealthLog:
             out["hist"] = {str(k): int(num(v)) for k, v in rec["hist"].items() if str(k).isdigit()}
         if isinstance(rec.get("games"), dict):
             out["games"] = {str(k): int(num(v)) for k, v in list(rec["games"].items())[:12]}
-        if isinstance(rec.get("snap"), dict):
-            out["snap"] = rec["snap"]
+        out["snap"] = HealthLog._clean_snap(rec.get("snap"))
         src = rec.get("shadow") if isinstance(rec.get("shadow"), dict) else {}
         for key in SHADOW_KEYS:
             out["shadow"][key] = int(num(src.get(key)))
         out["v2_ms"], out["v2_n"] = float(num(rec.get("v2_ms"))), int(num(rec.get("v2_n")))
         out["sent"] = rec.get("sent") is True
         return out
+
+    @staticmethod
+    def _clean_snap(snap):
+        """A snapshot read from the file: only the right kinds of values are kept, or none at all."""
+        if not isinstance(snap, dict):
+            return {}
+        screens = snap.get("screens")
+        if (not isinstance(screens, list) or not all(isinstance(s, list) and len(s) == 3 for s in screens[:4])
+                or not all(isinstance(snap.get(k), str) for k in ("version", "os", "capture", "tesseract"))):
+            return {}
+        return {k: snap[k] for k in ("version", "os", "capture", "tesseract")} | {"screens": [list(s) for s in screens[:4]]}
 
     def save(self, force=True):
         """Writes the record (atomically). Without `force` it only does so every SAVE_EVERY seconds."""
@@ -262,7 +272,13 @@ class HealthLog:
 
     # ---- counting
     def today(self):
-        return self.days.setdefault(utc_day(self.clock()), _new_day())
+        day = utc_day(self.clock())
+        if day not in self.days:
+            self.days[day] = _new_day()
+            earlier = [d for d in self.days if d < day and self.days[d]["snap"]]
+            if earlier:                 # (the overlay only takes a snapshot every few minutes: don't lose a day to that gap)
+                self.days[day]["snap"] = json.loads(json.dumps(self.days[max(earlier)]["snap"]))
+        return self.days[day]
 
     def look(self, kind, percent_only=False, tries=(), ms=None, tracking=0.0, game=None, shadow=None):
         """Counts one look. `kind`: one of EXP_KINDS. `tries`: (part, worked) pairs for the other readers.
@@ -330,7 +346,7 @@ class HealthLog:
         for name, pair in PAIRS.items():
             body[name] = {k: min(MAX_COUNT, rec[name][k]) for k in pair}
         if rec["errors"]:
-            body["errors"] = dict(sorted(rec["errors"].items(), key=lambda kv: -kv[1])[:10])
+            body["errors"] = {k: min(MAX_COUNT, n) for k, n in sorted(rec["errors"].items(), key=lambda kv: -kv[1])[:10]}
         if rec["ms_n"]:
             body["ms"] = {"look_avg": round(min(10000.0, rec["ms_total"] / rec["ms_n"]), 1),
                           "look_p95": round(min(10000.0, self._p95(rec)), 1)}
