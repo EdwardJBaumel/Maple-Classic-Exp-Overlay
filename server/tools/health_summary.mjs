@@ -24,7 +24,7 @@ const S = (p) => `COALESCE(SUM(${J(p)}),0)`;
 
 /** The five aggregate queries for reports received at or after `since` (an ISO time made here, never typed). */
 export function queries(since) {
-  const w = `received >= '${since}'`;
+  const w = `received >= '${since}' AND json_valid(body)`;
   return {
     groups: `SELECT ${J("version")} AS v, ${J("game.w")} AS w, ${J("game.h")} AS h, ${J("game.fullscreen")} AS fs,
       ${J("tesseract")} AS tess, ${J("capture")} AS cap, COUNT(DISTINCT id) AS players,

@@ -57,4 +57,18 @@ for (const bad of ["1; DROP TABLE x", "abc' OR 1=1", "ABCDEF", ""]) assert.throw
 // Every query filters on `received` (the indexed column).
 for (const sql of Object.values(queries("2026-10-01T00:00:00.000Z"))) assert.ok(sql.includes("received >= '2026-10-01T00:00:00.000Z'"));
 
+// One row that isn't JSON (it can't arrive through the site, only by hand) must not stop the whole summary.
+let sqlite = null;
+try { sqlite = await import("node:sqlite"); } catch { console.log("health_summary: SKIPPED the bad-row check (this Node has no node:sqlite)"); }
+if (sqlite) {
+  const db = new sqlite.DatabaseSync(":memory:");
+  db.exec("CREATE TABLE health_reports (id TEXT, day TEXT, received TEXT, conn TEXT, body TEXT)");
+  const put = db.prepare("INSERT INTO health_reports VALUES (?, '2026-10-25', '2026-10-25T10:00:00Z', 'c', ?)");
+  put.run("aaaaaaaaaaaaaaaa", JSON.stringify({ version: "0.9.14-beta", looks: 10, exp: { read: 10 }, errors: { OSError: 1 } }));
+  put.run("bbbbbbbbbbbbbbbb", "not json {{");
+  for (const [name, sql] of Object.entries(queries("2026-10-01T00:00:00.000Z"))) {
+    assert.doesNotThrow(() => db.prepare(sql).all(), `query ${name} survives a row that isn't JSON`);
+  }
+}
+
 console.log("health_summary: all checks passed");

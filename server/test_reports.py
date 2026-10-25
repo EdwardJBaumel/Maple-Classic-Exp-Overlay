@@ -193,5 +193,14 @@ check("...and the old health reports, player reports and counters are gone",
 check("...the same id and day is no longer a dup",
       post("/api/health", health_full, ip=fresh(), now=NOW) == (200, {"ok": True}))
 
+# ---- what is stored is the checked body in compact form, not the sender's padding (bounds storage per row)
+padded = json.dumps(dict(health_full, id="8" * 16, day=later_day), indent=1).replace("\n", "\n" + " " * 1000, 3)
+padded = '{"looks": 1, ' + padded.lstrip().lstrip("{")           # a repeated key: the later one wins, the first is junk
+status, a = post("/api/health", None, raw=padded.encode(), ip=fresh(), now=later)
+check("a padded body with a repeated key is accepted", status == 200)
+stored = sql("SELECT body FROM health_reports WHERE id = '" + "8" * 16 + "'")[0]["body"]
+check(f"...and stored compact ({len(stored)} bytes, sent {len(padded)})",
+      json.loads(stored) == dict(health_full, id="8" * 16, day=later_day) and stored == json.dumps(json.loads(stored), separators=(",", ":")))
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

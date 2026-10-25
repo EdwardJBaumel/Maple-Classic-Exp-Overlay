@@ -162,7 +162,7 @@ export async function handleReports(request, env, now, url, tools) {
     today, env.IP_SALT);
   const stamp = new Date(now).toISOString();
   const answer = isHealth
-    ? await storeHealth(env, body, raw, today, conn, stamp, limit)
+    ? await storeHealth(env, body, today, conn, stamp, limit)
     : await storeReport(env, body, today, conn, stamp, limit);
   // About 1 in 100 stored reports also clears old rows (only after a store, so a refused request writes nothing).
   if (answer.status === 200 && !answer.dup && Math.floor(Math.random() * limit.purgeEvery) === 0) {
@@ -189,17 +189,18 @@ function bump(env, day, key) {
      ON CONFLICT(day, key) DO UPDATE SET n = n + 1`).bind(day, key);
 }
 
-async function storeHealth(env, b, raw, today, conn, stamp, limit) {
+async function storeHealth(env, b, today, conn, stamp, limit) {
   // A repeat of the same day is answered from a one-row read; it writes nothing and doesn't count against the connection.
   const have = await env.DB.prepare("SELECT 1 AS x FROM health_reports WHERE id = ?1 AND day = ?2").bind(b.id, b.day).first();
   if (have) return Object.assign(reply({ ok: true, dup: true }), { dup: true });
+  // What is stored is the checked body written compactly, so spaces or repeated keys can't pad a row up to 4 KB.
   const connKey = "h:conn:" + conn;
   const insert = env.DB.prepare(
     `INSERT OR IGNORE INTO health_reports (id, day, received, conn, body)
      SELECT ?1, ?2, ?3, ?4, ?5
      WHERE COALESCE((SELECT n FROM limits WHERE day = ?6 AND key = ?7), 0) < ?8
        AND COALESCE((SELECT n FROM limits WHERE day = ?6 AND key = 'h:site'), 0) < ?9`
-  ).bind(b.id, b.day, stamp, conn, raw, today, connKey, limit.healthConn, limit.healthSite);
+  ).bind(b.id, b.day, stamp, conn, JSON.stringify(b), today, connKey, limit.healthConn, limit.healthSite);
   const results = await env.DB.batch([insert, bump(env, today, connKey), bump(env, today, "h:site")]);
   return results[0].meta.changes === 1 ? reply({ ok: true }) : reply({ retry: true }, 429);
 }
