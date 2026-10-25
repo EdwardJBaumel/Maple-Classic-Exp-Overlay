@@ -1956,5 +1956,17 @@ early = log.settle(t + 10, True, (9100, t + 10))
 done = not early and log.settle(931, True, (9100, t + 10))
 check("...and a look within 30 s of the end still gives it mesos", done and log.runs[0]["mesos"] > 8900)
 
+# errors.log: an error whose message changes every time (a number, a path) is still written once a minute per kind,
+# and the memory of what was written doesn't grow with every message (A08-2)
+m._last_errors.clear()
+before = m.ERROR_LOG_PATH.read_text(encoding="utf-8") if m.ERROR_LOG_PATH.exists() else ""
+for i in range(500):
+    m.log_error("reading the screen", ValueError(f"bad value {i}"))
+after = m.ERROR_LOG_PATH.read_text(encoding="utf-8")[len(before):]
+check("500 errors of one kind with changing messages: one errors.log entry, one remembered key",
+      after.count("reading the screen") == 1 and len(m._last_errors) == 1)
+m.log_error("reading the screen", OSError("other kind"))
+check("...an error of another kind is still written", len(m._last_errors) == 2)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

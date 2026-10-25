@@ -208,9 +208,11 @@ _last_errors = {}
 
 
 def log_error(what, exc=None):
-    """Adds an error, with details, to errors.log in the data folder (the same one at most
-    once a minute), so players can send it in when something goes wrong."""
-    key = (what, repr(exc))
+    """Adds an error, with details, to errors.log in the data folder (the same kind at most
+    once a minute), so players can send it in when something goes wrong. The kind is what was being
+    done and the exception's type, not its message: a message with a number or a path in it would
+    otherwise be written at every look and remembered for good."""
+    key = (what, type(exc).__name__ if exc is not None else None)
     with _error_lock:
         now = time.monotonic()
         if now - _last_errors.get(key, -1e9) < 60:
