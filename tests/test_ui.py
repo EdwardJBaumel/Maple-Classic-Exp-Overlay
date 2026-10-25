@@ -1147,14 +1147,17 @@ try:
     d_slow.message.insert("1.0", "slow site")
     slow_count = len(posted)
     m.post_report = lambda body, timeout=15: (time.sleep(1.5), "ok")[1]
-    ticks, t0 = 0, time.monotonic()
+    t0 = time.monotonic()
     button(d_slow, "Send")[0].command()
-    while "Sent, thank you" not in d_slow.status.cget("text") and time.monotonic() - t0 < 6:
+    stamps = [time.monotonic()]
+    while "Sent, thank you" not in d_slow.status.cget("text") and time.monotonic() - t0 < 15:
         root.update()
-        ticks += 1
+        stamps.append(time.monotonic())
         time.sleep(0.02)
-    check("while a slow send is waiting the window keeps answering (no freeze), then says thank you",
-          ticks > 30 and "Sent, thank you" in d_slow.status.cget("text") and len(posted) == slow_count)
+    gap = max(b - a for a, b in zip(stamps, stamps[1:])) if len(stamps) > 1 else 99
+    # (a frozen window would sit the whole 1.5 s send in one update; a slow test machine only makes updates fewer)
+    check(f"while a slow send is waiting the window keeps answering (no freeze; longest pause {gap:.2f} s), then says thank you",
+          gap < 1.0 and stamps[-1] - t0 >= 1.4 and "Sent, thank you" in d_slow.status.cget("text") and len(posted) == slow_count)
     m.post_report = lambda body, timeout=15: (posted.append(body), "ok")[1]
     d_slow.destroy()
     app.cfg.pop("reports_sent", None)
