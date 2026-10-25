@@ -77,6 +77,17 @@ class Shadow:
             return self.flip
         return True
 
+    def idle(self):
+        """Is v2 switched off or resting after an error? (Then nothing of it runs and nothing is counted.)"""
+        return not self.on or time.monotonic() < self.pause_until
+
+    def failed(self, exc):
+        """Something went wrong around v2 (outside look): counted as an error look, v2 pauses, on_error hears of it."""
+        self.counts["errors"] += 1
+        self.pause_until = time.monotonic() + ERROR_PAUSE
+        self.on_error(exc)
+        return Result("errors", None, None, None)
+
     # ---- one look
     def look(self, img, old, old_ms, old_lay=None, hint=None, more=None, old_img=None, own=None):
         """Runs v2 on `img` (the picture today's reader just read) and compares. `old`: today's confident
@@ -86,7 +97,7 @@ class Shadow:
         `own()`: v2's own small picture (when `img` doesn't hold the remembered spot) or None; called only once v2
         really runs, so a look v2 skips (off, paused, stopped, thinned) grabs nothing, and its time counts as v2's.
         Returns a Result, or None if v2 did not run for a reason that isn't counted (switched off, paused)."""
-        if not self.on or time.monotonic() < self.pause_until:
+        if self.idle():
             return None
         if not self._allowed():
             self.counts["skipped"] += 1

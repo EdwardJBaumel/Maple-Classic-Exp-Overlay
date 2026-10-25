@@ -1409,8 +1409,9 @@ check("shadow: v2 raising leaves today's reading as it was, counted as an error 
 glue, plain = shadow_reader(True), shadow_reader(False)
 glue.shadow.look = lambda *a, **k: 1 / 0               # (a failure in the code around v2, outside its own guard)
 got, want = glue.read(fscreen), plain.read(fscreen)
-check("shadow: a failure around v2 leaves today's reading exactly as it was, counted as a failed part",
-      got.confident and same_input(got, want) and got.shadow is None and glue.part_errors["reader v2"] == 1)
+check("shadow: a failure around v2 leaves today's reading exactly as it was, counted as a failed part and a shadow error, v2 rests",
+      got.confident and same_input(got, want) and got.shadow == ("errors", None) and glue.part_errors["reader v2"] == 1
+      and glue.shadow.counts["errors"] == 1 and glue.read(fscreen).shadow is None)
 
 dis = shadow_reader(True)
 dis.shadow.read = lambda font, lay: (1234, 12.34)
@@ -1499,6 +1500,25 @@ off.read(scr)
 scr.grabbed.clear()
 off.read(scr)
 check("shadow: shadow_reader false makes no screen grab of its own", len(scr.grabbed) == 1 and not any(off.shadow.counts.values()))
+
+# a failure in the glue around v2 (its own grab raising) is counted as a shadow error and pauses v2 like any other
+boom = full_reader()
+boom_scr = SlowScreen(full)
+boom.read(boom_scr)
+real_grab = boom_scr.grab
+
+
+def grab_fails_for_small(r):
+    if (r["left"], r["top"], r["width"], r["height"]) != tuple(boom.box):
+        raise OSError("grab failed")
+    return real_grab(r)
+
+
+boom_scr.grab = grab_fails_for_small
+got = boom.read(boom_scr)
+check("shadow: v2's own grab raising is a counted shadow error, today's reading stays, v2 pauses",
+      got.confident and got.shadow and got.shadow[0] == "errors" and boom.shadow.counts["errors"] == 1
+      and boom.part_errors["reader v2"] == 1 and boom.read(boom_scr).shadow is None)
 
 m.TESS, m.tesseract_ok = before_tess
 

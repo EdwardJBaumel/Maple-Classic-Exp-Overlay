@@ -2139,11 +2139,11 @@ class ScreenReader:
         try:
             return self._shadow_look_v2(capture, rect, shot, reading, lay, started)
         except Exception as e:
-            self._part_failed("reader v2", e)
-            return reading
+            self.shadow.failed(e)           # (counted like any v2 error, and v2 rests a minute)
+            return reading._replace(shadow=("errors", None))
 
     def _shadow_look_v2(self, capture, rect, shot, reading, lay, started):
-        if not shot or not self.shadow.on:
+        if not shot or self.shadow.idle():
             return reading
         wx, wy, ww, wh = rect
         old_img, ox, oy = shot[0], shot[1] - wx, shot[2] - wy      # where this picture sits in the game window
