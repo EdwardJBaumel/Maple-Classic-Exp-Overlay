@@ -262,6 +262,51 @@ if real_exe:
         m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
         m.tesseract_state, m.tesseract_why = "missing", ""
 
+# Windows: a data folder under letters outside the PC's code page needs its 8.3 short name; without one it is refused
+# (a fake eng.traineddata is enough: the choice is made before Tesseract is ever started)
+if sys.platform == "win32":
+    import ctypes
+    kernel = ctypes.windll.kernel32
+    odd_root = Path(tempfile.mkdtemp()) / "Привет 名前"
+    (odd_root / "tessdata").mkdir(parents=True)
+    (odd_root / "tessdata" / "eng.traineddata").write_bytes(big)
+    odd_exe = odd_root / "tesseract.exe"
+    odd_exe.write_bytes(b"")
+    saved_cands, saved_data = m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates
+    m.PLATFORM.tesseract_candidates = lambda home, app: [odd_exe]
+    probe = ctypes.create_unicode_buffer(1024)
+    has_short = kernel.GetShortPathNameW(str(odd_root / "tessdata"), probe, 1024) > 0 and probe.value != str(odd_root / "tessdata")
+    try:
+        exe, arg, state, why = m.locate_tesseract()
+        if has_short:
+            check("odd letters, 8.3 names on: the data folder is handed over by a short name that only has code-page letters",
+                  state == "ok" and arg and arg != str(odd_root / "tessdata") and arg.encode("mbcs").decode("mbcs") == arg
+                  and (Path(arg) / "eng.traineddata").is_file())
+        else:
+            print("     (this PC has no 8.3 names for that folder: the short-name case is only tested with a fake answer)")
+
+        def short_name(answer):
+            def fake(path, buf, size):
+                if answer:
+                    buf.value = answer if answer != "same" else path
+                    return len(buf.value)
+                return 0
+            return fake
+
+        for what, answer in (("8.3 names switched off (the long name comes back)", "same"), ("the call failing", "")):
+            kernel.GetShortPathNameW = short_name(answer)
+            try:
+                exe, arg, state, why = m.locate_tesseract()
+            finally:
+                del kernel.GetShortPathNameW
+            m.tesseract_state, m.tesseract_why = state, why
+            check(f"odd letters and {what}: no Tesseract, state no_eng, the path reason, and the player is told to move the folder",
+                  exe is None and state == "no_eng" and why == "path" and "unusual characters" in m.tesseract_note())
+        check("...the real call is back afterwards", kernel.GetShortPathNameW is not None and not hasattr(kernel.GetShortPathNameW, "__code__"))
+    finally:
+        m.PLATFORM.tesseract_candidates, m.PLATFORM.tessdata_candidates = saved_cands, saved_data
+        m.tesseract_state, m.tesseract_why = "missing", ""
+
 # macOS rules, run on any OS: the methods are cut out of platforms/macos.py (it can only be imported on a Mac)
 tree = ast.parse((Path(m.__file__).parent / "platforms" / "macos.py").read_text(encoding="utf-8"))
 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MacPlatform")
