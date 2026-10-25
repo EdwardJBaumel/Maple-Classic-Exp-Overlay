@@ -1512,5 +1512,55 @@ for scale, width in ((1.875, 2560), (1.875, 2500), (1.875, 1920), (2.8125, 3840)
     wide[15:15 + bar.shape[0], 12:12 + bar.shape[1]] = bar
     check(f"a {scale}x bar in a strip {width} px wide is found and read", read_v2(wide) == (68601, 71.68))
 
+
+# the small UI (UI Size "Ideal", or a small window) on a very wide screen: the text is far under 0.3% of the strip,
+# so the finder asks each stretch alone and, if that is not enough, uses a smaller blur (A02-4)
+for scale, width, bg in ((1.0, 2560, 30), (1.0, 3840, 30), (1.0, 5120, 30), (1.25, 3840, 30), (1.25, 5120, 30),
+                         (1.5, 5120, 30), (1.0, 3840, 60), (1.25, 3840, 60)):
+    bar = cv2.resize(wide_bar, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR) if scale != 1 else wide_bar
+    wide = np.full((317, width, 3), bg, np.uint8)
+    wide[15:15 + bar.shape[0], 12:12 + bar.shape[1]] = bar
+    check(f"a {scale}x bar on a {bg} grey strip {width} px wide is found and read", read_v2(wide) == (68601, 71.68))
+
+
+def box_window(width, height, text, ideal=False):
+    """A window-sized picture with the text drawn the way the model says (hard 1x pixels, each screen pixel
+    averaging the ones it covers). SYNTHETIC: it can't prove the game draws it this way, A10 checks that live."""
+    s = exp_font.window_scale(height, ideal)
+    cv, _ = exp_font.canvas(text)
+    tx, ty = exp_font.text_origin(width, height, ideal)
+    x0, y0, ww, hh = int(tx) - 3, int(ty) - 3, int(cv.shape[1] * s) + 8, int(cv.shape[0] * s) + 8
+    cov = np.zeros((hh, ww), np.float32)
+    for i in range(6):
+        for j in range(6):
+            xs = ((np.arange(ww) + (i + 0.5) / 6 + x0 - tx) / s - 0.5).astype(np.float32)
+            ys = ((np.arange(hh) + (j + 0.5) / 6 + y0 - ty) / s - 0.5).astype(np.float32)
+            mx, my = np.meshgrid(xs, ys)
+            cov += cv2.remap(cv, mx, my, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) / 36
+    lab = np.array(font["label"]["rows"], np.float32) / 255
+    lab = np.clip((lab - lab.min()) / (1 - lab.min()), 0, 1)
+    left, top = tx + font["label"]["dx"] * s, ty + font["label"]["dy"] * s
+    lx, ly = int(left) - 3, int(top) - 3
+    lw, lh = int(font["label"]["w"] * s) + 8, int(font["label"]["h"] * s) + 8
+    lcov = np.zeros((lh, lw), np.float32)
+    for i in range(6):
+        for j in range(6):
+            xs = ((np.arange(lw) + (i + 0.5) / 6 + lx - left) / s - 0.5).astype(np.float32)
+            ys = ((np.arange(lh) + (j + 0.5) / 6 + ly - top) / s - 0.5).astype(np.float32)
+            mx, my = np.meshgrid(xs, ys)
+            lcov += cv2.remap(lab, mx, my, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) / 36
+    img = np.full((height, width), 74, np.float32)
+    img[ly:ly + lh, lx:lx + lw] = 74 + 181 * lcov
+    img[y0:y0 + hh, x0:x0 + ww] = 74 + 181 * cov
+    return cv2.merge([img.astype(np.uint8)] * 3)
+
+
+for (w_, h_, ideal) in ((2560, 1440, False), (2560, 1600, False), (2732, 1536, False), (3840, 2160, False),
+                        (5120, 2880, False), (1920, 1080, True), (2560, 1440, True), (3440, 1440, True),
+                        (3840, 2160, True), (5120, 2880, True)):
+    win = box_window(w_, h_, "68,601 [71.68%]", ideal)
+    strip = win[int(h_ * (1 - m.SEARCH_STRIP)):]
+    check(f"synthetic {w_}x{h_}, UI {'Ideal' if ideal else 'Default'}: the bar is found in the bottom strip and read",
+          read_v2(strip) == (68601, 71.68))
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

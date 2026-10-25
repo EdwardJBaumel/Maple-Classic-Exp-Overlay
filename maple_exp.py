@@ -631,6 +631,8 @@ def find_exp(bgr):
 V2_TEXT = 0.12      # how far above its surroundings text must be (share of how bright the brightest text is)
 V2_PERCENT = 0.5    # how well a blob must match the game's "%" glyph (correlation) to be taken for one
 V2_FAINT = 0.07     # ...and for the thin, paler brackets
+V2_TILE = 128       # width of a stretch of a very wide strip whose text brightness is judged on its own
+V2_WIDE = 2200      # a strip this wide also gets the small blur when nothing is found
 
 
 def _v2_brightness(bgr):
@@ -639,17 +641,22 @@ def _v2_brightness(bgr):
     return cv2.max(cv2.max(b, g), r)
 
 
-def _v2_text_mask(V, width=None):
+def _v2_text_mask(V, width=None, tiled=False):
     """(text, faint): pixels clearly brighter than the local average, and a second mask that also takes
     the paler ones (brackets); None if nothing in the picture is bright enough to be text. The local
-    average is taken over about 3 digit heights."""
+    average is taken over about 3 digit heights. "How bright text is" is the 99.7th percentile of that
+    contrast; tiled=True asks every stretch of V2_TILE columns alone and takes the strongest (for a very
+    wide strip, where small text is far under 0.3% of all the pixels)."""
     k = int(min(63, max(31, 0.0165 * (width or V.shape[1])))) | 1
     D = cv2.subtract(V, cv2.blur(V, (k, k), borderType=cv2.BORDER_REPLICATE))
-    hist = cv2.calcHist([D], [0], None, [256], [0, 256]).ravel().cumsum()
-    top = int(np.searchsorted(hist, 0.997 * hist[-1]))
+    top = 0
+    for x in range(0, D.shape[1], V2_TILE if tiled else max(1, D.shape[1])):
+        part = D[:, x:x + V2_TILE] if tiled else D
+        hist = cv2.calcHist([part], [0], None, [256], [0, 256]).ravel().cumsum()
+        top = max(top, int(np.searchsorted(hist, 0.997 * hist[-1])))
     if top < 25:
         return None
-    return D >= V2_TEXT * top, D >= V2_FAINT * top
+    return D >= V2_TEXT * top, D >= (V2_FAINT / 2 if tiled else V2_FAINT) * top
 
 
 def _v2_has_feet(V, b):
@@ -775,8 +782,21 @@ def _v2_bracket_candidates(mask, V8, have):
 
 
 def _find_exp_v2(bgr, width=None):
+    """(width: the whole screen's width where bgr is only a box of it; it sets the size of the blur.)"""
+    lay = _find_exp_v2_try(bgr, width, False)
+    if lay is None:
+        # Text that is a tiny share of the picture (the small UI on a big screen: a very wide strip) is not
+        # what the 99.7th percentile sees: look again asking each stretch alone, and on a very wide strip
+        # also with the small blur (the big one runs the text's soft edges together).
+        lay = _find_exp_v2_try(bgr, width, True)
+        if lay is None and (width or bgr.shape[1]) >= V2_WIDE:
+            lay = _find_exp_v2_try(bgr, 1, True)
+    return lay
+
+
+def _find_exp_v2_try(bgr, width, tiled):
     V8 = _v2_brightness(bgr)
-    masks = _v2_text_mask(V8, width)
+    masks = _v2_text_mask(V8, width, tiled)
     if masks is None:
         return None
     low, faint = masks
