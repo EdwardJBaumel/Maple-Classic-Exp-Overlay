@@ -174,6 +174,7 @@ def fake_install(root, data=None):
     root.mkdir(parents=True, exist_ok=True)
     exe = root / "tesseract.exe"
     exe.write_bytes(b"")
+    exe.chmod(0o755)                    # (a program must be allowed to run: on macOS a new file isn't)
     if data is not None:
         (root / "tessdata").mkdir(exist_ok=True)
         (root / "tessdata" / "eng.traineddata").write_bytes(data)
