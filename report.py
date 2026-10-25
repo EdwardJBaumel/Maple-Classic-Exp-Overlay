@@ -6,6 +6,7 @@ short history of what happened (Recent), keeps count of how the reading thread i
 Nothing here reads the screen or the network. Nothing personal goes in: no character name,
 and the Windows user name is taken out of anything that looks like a file path by the caller.
 """
+import json
 import re
 import time
 from collections import deque
@@ -237,24 +238,31 @@ def details(f):
 
 # ---- sending a report to the developer (Send report)
 
-MAX_MESSAGE = 2000                  # what the site takes (server/src/reports.js)
+MAX_MESSAGE = 2000                  # what the site takes (server/src/reports.js), counted like JavaScript: UTF-16 units
 MAX_DETAILS = 12000
+MAX_BODY = 16000                    # the site refuses a body over 16,384 bytes; this leaves a little room
+MAX_MESSAGE_BYTES = 8000            # the typed message may take at most half of that, so the details always have room
+# What JavaScript's trim() removes (the site trims the message with it): not Python's strip()
+JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 _LINK = re.compile(r"http|www\.|discord\.gg|\.com/", re.I)
 _PATHS = (
-    re.compile(r'(?<![A-Za-z0-9])[A-Za-z]:[\\/](?![\\/])(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\s\\/:*?"<>|]*'),      # C:\Users\Me\OneDrive - Co\x.py
-    re.compile(r'\\\\(?:[^\\/:*?"<>|\r\n]+[\\/])*[^\s\\/:*?"<>|]*'),                # \\server\share\x
+    # Python writes the backslashes of a path inside an error message twice ('C:\\Users\\Me\\x.py'), so a
+    # separator is a run of backslashes or one slash.
+    re.compile(r'(?<![A-Za-z0-9])[A-Za-z]:(?:\\+|/(?!/))(?:[^\\/:*?"<>|\r\n]+(?:\\+|/))*[^\s\\/:*?"<>|]*'),      # C:\Users\Me\OneDrive - Co\x.py
+    re.compile(r'\\{2,}(?:[^\\/:*?"<>|\r\n]+[\\/]+)*[^\s\\/:*?"<>|]*'),             # \\server\share\x
     re.compile(r"(?<![\w:./])/(?:Users|home)/(?:[^/\r\n]+/)*[^\s/]*"),              # /Users/me/Library/x
     re.compile(r"(?<![\w:./])/(?:[\w.\-~@+]+/)+[\w.\-~@+]*"),                       # /Applications/X.app/y
 )
 
 
 def _last_part(match):
-    return re.split(r"[\\/]", match.group(0).rstrip("\\/"))[-1] or "<folder>"
+    return re.split(r"[\\/]+", match.group(0).rstrip("\\/"))[-1] or "<folder>"
 
 
 def scrub(text, names=(), limit=MAX_DETAILS):
     """The text with nothing personal left: every absolute path shortened to its last part, each of `names`
-    (Windows or macOS user name, computer name) replaced, and no longer than `limit` characters."""
+    (Windows or macOS user name, computer name) replaced, and no longer than `limit` characters (None: whole).
+    The cut comes last, so it can never leave half a path or name."""
     text = str(text)
     for pattern in _PATHS:
         text = pattern.sub(_last_part, text)
@@ -263,19 +271,46 @@ def scrub(text, names=(), limit=MAX_DETAILS):
     return text[:limit]
 
 
+def units(text):
+    """How long the site thinks a text is: JavaScript counts UTF-16 units, so an emoji is 2."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def encode_body(body):
+    """The bytes that are posted: JSON as UTF-8 (a Chinese character is 3 bytes, not the 6 of \\uXXXX)."""
+    return json.dumps(body, ensure_ascii=False).encode("utf-8", "replace")
+
+
+def clean_message(message):
+    """The typed message trimmed the way the site trims it."""
+    return message.strip(JS_SPACE)
+
+
 def message_problem(message):
     """Why the typed message can't be sent (in the player's words), or None."""
-    message = message.strip()
+    message = clean_message(message)
     if not message:
         return "Please write a sentence about what went wrong."
-    if len(message) > MAX_MESSAGE:
+    if units(message) > MAX_MESSAGE:
         return f"Please keep it under {MAX_MESSAGE:,} characters."
+    if len(encode_body({"message": message})) > MAX_MESSAGE_BYTES:
+        return "Please keep it shorter."
     if _LINK.search(message):
         return "Please leave out links."
     return None
 
 
 def report_body(health_id, version, message, details):
-    """What /api/report takes: exactly these four fields."""
-    return {"id": health_id, "version": version, "message": message.strip(),
-            "details": str(details)[:MAX_DETAILS]}
+    """What /api/report takes: exactly these four fields. The details are cut (from the end) until they are
+    within the site's 12,000 characters and the whole body fits its 16 KB, whatever language was typed."""
+    body = {"id": health_id, "version": version, "message": clean_message(message), "details": str(details)}
+
+    def fits(n):
+        body["details"] = str(details)[:n]
+        return units(body["details"]) <= MAX_DETAILS and len(encode_body(body)) <= MAX_BODY
+    low, high = 0, len(str(details))
+    while low < high:                           # the longest start of the details that still fits
+        mid = (low + high + 1) // 2
+        low, high = (mid, high) if fits(mid) else (low, mid - 1)
+    fits(low)
+    return body
