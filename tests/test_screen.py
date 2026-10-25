@@ -982,6 +982,33 @@ finally:
     m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
 
 
+# ---- a class read that fails isn't tried again at every look (each try starts Tesseract), only after a pause
+m.time.monotonic = lambda: clock[0]
+m.TESS, m.tesseract_ok = Says("32"), True
+try:
+    r, screen = matrix_reader("class")
+    tries = [0]
+
+    def failing_job(*a, **k):
+        tries[0] += 1
+        raise OSError("gone")
+    real_job = m.read_job
+    m.read_job = failing_job
+    try:
+        r.next_job_read = 0.0
+        for _ in range(6):                                  # 9 s of looks
+            clock[0] += 1.5
+            r.read(screen)
+        in_nine = tries[0]
+        clock[0] += 3
+        r.read(screen)
+    finally:
+        m.read_job = real_job
+    check(f"a failing class read is tried once, not at each of 6 looks ({in_nine}), and again after a pause ({tries[0]})",
+          in_nine == 1 and tries[0] == 2)
+finally:
+    m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
+
 # ---- health reports count each look once, by what happened to the EXP bar (exp_kind), and note which other readers tried
 def kind_of_look(templates=True, tesseract=None, setup=None):
     r = part_reader(templates)

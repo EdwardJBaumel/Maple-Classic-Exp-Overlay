@@ -1920,6 +1920,7 @@ class ScreenReader:
             return
         shot = capture.grab(x0, y0, w, h)
         look = {}
+        self.next_job_read = now + 10         # (kept if the read raises: it isn't started again at every look)
         job = read_job(shot[0], wx + ax - shot[1], wy + ay - shot[2], g, look) if shot else None
         self._part_ok("class")
         self.job_look = look or None
