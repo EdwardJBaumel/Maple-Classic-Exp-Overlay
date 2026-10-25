@@ -38,15 +38,23 @@ def text_origin(window_w, window_h, ideal=False, font=None):
     return window_w / 2 + (o["x"] - DESIGN_W / 2) * s, window_h - (DESIGN_H - o["y"]) * s
 
 
-def canvas(text, font=None):
-    """The text at 1x as a 0..1 picture (7 rows). -> (picture, [(left, right) of each bracket])
-    Spaces are ignored: the gap before '[' is part of that glyph's spacing."""
+def glyph_positions(text, font=None):
+    """Where each glyph of the text starts at 1x: [(char, pen, ink left, glyph)]. 'pen' is where its cell
+    starts; the ink starts x0 later. Spaces are ignored (the gap before '[' is part of that glyph)."""
     font = font or load()
     pen, items = 0, []
     for ch in text.replace(" ", ""):
         g = font["glyphs"][ch]
-        items.append((ch, pen + g["x0"], g))
+        items.append((ch, pen, pen + g["x0"], g))
         pen += g["adv"]
+    return items
+
+
+def canvas(text, font=None):
+    """The text at 1x as a 0..1 picture (7 rows). -> (picture, [(left, right) of each bracket])
+    Spaces are ignored: the gap before '[' is part of that glyph's spacing."""
+    font = font or load()
+    items = [(ch, x, g) for ch, _, x, g in glyph_positions(text, font)]
     width = max(x + g["w"] for _, x, g in items)
     pic = np.zeros((font["digit_height"], width), np.float32)
     brackets = []

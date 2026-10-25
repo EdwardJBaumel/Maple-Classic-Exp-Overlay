@@ -1000,5 +1000,64 @@ for f in sorted(FRAMES.glob("exp_*.png")):
 check("a blank picture has no bar", m.find_exp_v2(np.full((200, 1000, 3), 40, np.uint8)) is None)
 check("noise has no bar", m.find_exp_v2(np.random.default_rng(3).integers(0, 255, (200, 1000, 3), dtype=np.uint8)) is None)
 
+# ---- digit reader v2: draws the game's own font at the screen's scale and compares pixels
+import digits_v2  # noqa: E402
+
+
+def fake_layout(exp, pct, scale, noise=0.0, blur=0.0, cover=None, seed=1):
+    """A Layout of a bar made from the font alone (grey: the label "EXP.", the number, the brackets and the
+    percentage, scaled the way the game scales them), as the finder would hand it over."""
+    text = ("{:,}".format(exp) + " " if exp else "") + "[" + "{:.2f}".format(pct) + "%]"
+    h, w = round(40 * scale) + 20, round(150 * scale) + 20
+    tx, ty = 40 + 30 * scale, 10 + 5 * scale
+    pic, _ = exp_font.canvas(text)
+    ink = exp_font.sample(pic, scale, tx, ty, (h, w))
+    lab = np.array(font["label"]["rows"], np.float32) / 255
+    at = (tx + font["label"]["dx"] * scale, ty + font["label"]["dy"] * scale)
+    label = exp_font.sample(lab, scale, at[0], at[1], (h, w))
+    inside = exp_font.sample(np.ones_like(lab), scale, at[0], at[1], (h, w))
+    grey = np.full((h, w), 70.0, np.float32) * (1 - inside) + label * 255 * inside
+    grey = grey + (255 - grey) * ink
+    if blur:
+        grey = cv2.GaussianBlur(grey, (0, 0), blur)
+    if noise:
+        grey = grey + np.random.default_rng(seed).normal(0, noise, grey.shape)
+    grey = np.clip(grey, 0, 255).astype(np.uint8)
+    if cover:                                                               # a rectangle over part of the number
+        grey[int(ty):int(ty + 7 * scale), int(tx + cover[0] * scale):int(tx + cover[1] * scale)] = 60
+    items = exp_font.glyph_positions(text, font)
+    cell = lambda it: (tx + scale * (it[1] + 2.5), 5 * scale, "digit")
+    digits = [it for it in items if it[0].isdigit()]
+    n_exp = len(digits) - len(("{:.2f}".format(pct)).replace(".", ""))
+    last = items[-1]
+    return m.Layout(7 * scale * 1.05, ty + 3.5 * scale, [cell(it) for it in digits[:n_exp]],
+                    [cell(it) for it in digits[n_exp:]] + [(tx + scale * (items[-2][1] + 3.5), 7 * scale, "wide")],
+                    (tx + scale * items[0][2], ty, tx + scale * (last[2] + last[3]["w"]), ty + 7 * scale), grey.astype(np.float32))
+
+
+def v2_digits(lay):
+    return digits_v2.read_layout_v2(font, lay)
+
+
+rng = random.Random(7)
+for scale in (1.0, 1.5, 2.0, 3.0, 4.0):
+    wrong = unknown = 0
+    for _ in range(6):
+        exp, pct = rng.randint(1, 9_999_999), rng.randint(0, 9999) / 100
+        got = v2_digits(fake_layout(exp, pct, scale))
+        wrong += got is not None and got != (exp, pct)
+        unknown += got is None
+    check(f"v2 digits: random numbers drawn at {scale}x read back exactly (no wrong, at most 1 unknown of 6)", wrong == 0 and unknown <= 1)
+    check(f"v2 digits: 38,849 [61.02%] drawn at {scale}x reads", v2_digits(fake_layout(38849, 61.02, scale)) == (38849, 61.02))
+    check(f"v2 digits: a blurred, noisy copy at {scale}x still reads or is unknown, never another number",
+          v2_digits(fake_layout(38849, 61.02, scale, noise=14, blur=0.8 * scale)) in (None, (38849, 61.02)))
+    check(f"v2 digits: a number with its first digits covered is unknown, {scale}x", v2_digits(fake_layout(38849, 61.02, scale, cover=(0, 14))) is None)
+    check(f"v2 digits: a number with a middle digit covered is unknown, {scale}x", v2_digits(fake_layout(38849, 61.02, scale, cover=(16.5, 23))) is None)
+for f in sorted(FRAMES.glob("exp_*.png")):
+    bar, size = cv2.imread(str(f)), f.stem[4:]
+    check(f"v2 digits read the real bar as 68601 [71.68%], {size}", v2_digits(m.find_exp_v2(bar)) == (68601, 71.68))
+    check(f"...also from the colour finder's layout, {size}", m.find_exp(bar) is not None
+          and digits_v2.read_layout_v2(font, m.find_exp(bar)) == (68601, 71.68))
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)
