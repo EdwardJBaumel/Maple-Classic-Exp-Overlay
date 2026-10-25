@@ -772,6 +772,14 @@ def part_reader(templates=True):
     r.hwnd, r.mode, r.own_rect = 1, "window", (-5000, -5000, 10, 10)
     return r
 
+# a capture that sees through windows: our window over the EXP bar changes nothing in the read, but the geometry still says "covering"
+from capture import Capture, ScreenCapture  # noqa: E402
+
+
+class SeeThrough(ScreenCapture):
+    name = "window"
+    sees_through_windows = True
+
 
 frame = cv2.imread(str(FRAMES / "exp_win-1280x720.png"))
 fh, fw = frame.shape[:2]
@@ -846,6 +854,23 @@ try:
 finally:
     m.time.monotonic, m.TESS, m.tesseract_ok = real_monotonic, real_tess, real_ok
     m.tesseract_candidates, m.read_map_name = real_candidates, real_map
+
+rect_f = (0, 0, fw, fh)
+for cap_class, wanted in ((ScreenCapture, False), (SeeThrough, True)):
+    r = m.ScreenReader(m.DigitTemplates.load())
+    cap = cap_class(FakeScreen(frame))
+    first = r._read_window(cap, rect_f)
+    check(f"{cap.name} capture: the bar is found with nothing in the way", first.confident)
+    bx, by, bw, bh = r.box
+    r.own_rect = (bx, by, bw, bh)                       # this window right on top of the bar
+    r.last_rect, r.gh = rect_f, r.gh
+    again = r._read_window(cap, rect_f)
+    check(f"{cap.name} capture, our window over the EXP bar: " + ("still read, no covering message" if wanted else "covering message"),
+          again.confident if wanted else "covering" in again.where)
+    check(f"{cap.name} capture: diagnostics() names the capture and still lists the EXP bar as covered",
+          r.diagnostics()["capture"] == cap.name and "EXP bar" in r.diagnostics()["covering"])
+check("the bare fake screen is wrapped as a screen copy", isinstance(m.as_capture(FakeScreen(frame)), ScreenCapture)
+      and isinstance(m.as_capture(SeeThrough(None)), Capture))
 
 if m.tesseract_ok:
     game = cv2.imread(str(Path(__file__).resolve().parent.parent / "docs" / "screenshot-game.jpg"))
