@@ -529,7 +529,9 @@ try:
     m.urllib.request.urlopen = lambda request, timeout=0: (_ for _ in ()).throw(TimeoutError("timed out"))
     check("a timeout means try later", m.post_health(full) == ("later", ""))
     m.urllib.request.urlopen = http_error(400, b"<html>proxy says no</html>")
-    check("a 400 that isn't the site's own answer is 'bad' with no field", m.post_health(full) == ("bad", ""))
+    check("a 400 that isn't the site's own answer (a proxy, a hotel Wi-Fi page) means try later", m.post_health(full) == ("later", ""))
+    m.urllib.request.urlopen = http_error(400, b'{"message": "no"}')
+    check("...also JSON without the site's error field", m.post_health(full) == ("later", ""))
     m.urllib.request.urlopen = http_error(400, b'{"error": "Bad Field!<script>"}')
     check("the field name from a 400 is cut down to letters", m.post_health(full) == ("bad", "BadFieldscript"))
     for code in (301, 403, 404, 405, 415, 429, 500, 502, 503):
@@ -637,6 +639,21 @@ try:
 except Exception:
     ok = False
 check("a failure while counting a look doesn't stop the look from being handled", ok)
+
+# Decision 1 (owner, 2026-10-25): a day where every look broke has no counted look, but its exception names are
+# what a report is for
+fresh()
+log = new_log()
+log.snapshot("0.9.14-beta", "Windows 10", [(1920, 1080, 100)], "screen", "ok")
+log.errors({"ValueError": 40})
+broken_day = log.body("2026-10-25", "0123456789abcdef")
+check("a day with exception names but no counted look is still sent (looks 0)",
+      broken_day is not None and broken_day["looks"] == 0 and broken_day["errors"] == {"ValueError": 40}
+      and healthlog.bad_field(broken_day, "2026-10-26") is None)
+fresh()
+log = new_log()
+log.snapshot("0.9.14-beta", "Windows 10", [(1920, 1080, 100)], "screen", "ok")
+check("...a day with neither looks nor exceptions still isn't", log.body("2026-10-25", "0123456789abcdef") is None)
 
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

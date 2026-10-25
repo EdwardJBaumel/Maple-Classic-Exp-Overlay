@@ -331,7 +331,9 @@ class HealthLog:
         """The report body for `day`, or None if that day has nothing worth sending. Everything is clamped to
         what the site accepts; if it still would not pass, None."""
         rec = self.days.get(day)
-        if not rec or rec["looks"] <= 0 or not rec["snap"]:
+        # (a day with no counted look is still sent when it has exception names: every look broke, which is
+        # exactly when a report helps)
+        if not rec or (rec["looks"] <= 0 and not rec["errors"]) or not rec["snap"]:
             return None
         snap = rec["snap"]
         exp = {k: min(MAX_COUNT, rec["exp"][k]) for k in EXP_KINDS}

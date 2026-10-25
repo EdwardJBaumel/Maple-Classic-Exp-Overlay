@@ -386,7 +386,9 @@ def _plain_text(markdown):
 
 def check_for_update(timeout=8):
     """(newer version, its release notes) if GitHub has a newer release, else None.
-    Raises if GitHub can't be reached."""
+    Raises if GitHub can't be reached, and while testing (MAPLE_EXP_DATA set: nothing goes online then)."""
+    if sharing_blocked():
+        raise RuntimeError("the update check is off while testing (MAPLE_EXP_DATA is set)")
     request = urllib.request.Request(LATEST_RELEASE_API, headers={
         "User-Agent": f"MapleClassicExpOverlay/{VERSION}", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -444,7 +446,10 @@ def post_health(body, timeout=15):
                 field = str(json.loads(e.read(1000).decode("utf-8")).get("error", ""))
             except Exception:
                 field = ""
-            return "bad", re.sub(r"[^A-Za-z_]", "", field)[:40]
+            field = re.sub(r"[^A-Za-z_]", "", field)[:40]
+            # (only the site's own refusal names a field; a proxy or a hotel Wi-Fi page answering 400 is "try later",
+            # or that day would be dropped for nothing)
+            return ("bad", field) if field else ("later", "")
         return "later", ""
     except Exception:
         return "later", ""

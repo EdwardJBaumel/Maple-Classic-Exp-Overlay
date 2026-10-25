@@ -1997,5 +1997,18 @@ for i in range(50):
     m.log_error(f"reading the mesos failed ({i} more failures skipped since the last entry)", ValueError("x"))
 check("...nor when what was being done carries a changing count (one remembered key)", len(m._last_errors) == 1)
 
+# the update check stays quiet on a test data folder, like every sender (owner, 2026-10-25)
+real_urlopen = m.urllib.request.urlopen
+m.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(AssertionError("went online"))
+try:
+    m.check_for_update()
+    quiet = False
+except RuntimeError:
+    quiet = True
+except AssertionError:
+    quiet = False
+m.urllib.request.urlopen = real_urlopen
+check("the update check doesn't go online while MAPLE_EXP_DATA is set", quiet)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

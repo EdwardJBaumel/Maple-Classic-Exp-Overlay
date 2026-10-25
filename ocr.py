@@ -38,7 +38,7 @@ class Tesseract:
     tessdata: the folder with eng.traineddata, as Tesseract must be told it (see
     Platform.tessdata_arg); then a TESSDATA_PREFIX left in the environment can't send it elsewhere."""
 
-    def __init__(self, cmd, timeout=30, tessdata=None):
+    def __init__(self, cmd, timeout=15, tessdata=None):     # (a real run takes 0.06-0.7 s; 15 s = stuck)
         self.cmd, self.timeout, self.tessdata = cmd, timeout, tessdata
         self.env = dict(os.environ, OMP_THREAD_LIMIT="1")
         if tessdata:

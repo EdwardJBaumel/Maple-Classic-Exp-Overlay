@@ -357,5 +357,8 @@ macports = Path("/opt/local/bin/tesseract")
 check("macOS: MacPorts' program finds /opt/local/share/tessdata beside it",
       mac.tessdata_candidates(macports)[0].as_posix() == "/opt/local/share/tessdata")
 
+check("Tesseract is given 15 s before it counts as stuck (a real run takes well under 1 s)",
+      ocr.Tesseract("tesseract").timeout == 15)
+
 print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
 sys.exit(1 if failures else 0)

@@ -158,6 +158,17 @@ status, answer = post(body, "10.6.0.1")
 check("a day posted twice: the second answer is a repeat, which post_health takes as done",
       status == 200 and post(body, "10.6.0.2")[1] == {"ok": True, "dup": True})
 
+# a day where every look broke: no counted look, only exception names (sent since the owner's decision, 2026-10-25)
+(folder / "health.json").unlink(missing_ok=True)
+clock[0] = now - 86400
+log = new_log()
+log.snapshot("0.9.14-beta", "Windows 10.0.26200", [(1920, 1080, 100)], "screen", "ok")
+log.errors({"ValueError": 40, "OSError": 2})
+clock[0] = now
+broken = log.body(healthlog.utc_day(now - 86400), "2222222222222222")
+check("a day where every look broke (0 looks, only exception names) is built and the site takes it",
+      broken is not None and broken["looks"] == 0 and post(broken, "10.7.0.1") == (200, {"ok": True}))
+
 # ---- 4. what the server says about bad requests, as the overlay reads it
 m.STATS_SITE = BASE
 check("a body the server refuses comes back as 'bad' with the field named", m.post_health({**body, "looks": -1}) == ("bad", "looks"))
