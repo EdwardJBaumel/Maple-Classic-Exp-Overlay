@@ -11,9 +11,11 @@ The pictures are single-channel (grey) images, which is what the readers make.
 import os
 import subprocess
 import tempfile
+import time
 
 import cv2
 
+PAUSE_AFTER_TIMEOUT = 60             # seconds Tesseract is left alone after a run timed out
 PAGE_BREAK = "\f"                    # what Tesseract puts between one picture's text and the next
 
 
@@ -42,12 +44,15 @@ class Tesseract:
         if tessdata:
             self.env.pop("TESSDATA_PREFIX", None)
         self.runs = 0                                   # how many times Tesseract was started
+        self.paused_until = 0.0                         # after a timeout: no new run before this (time.monotonic)
 
     def read_lines(self, images, chars=None):
         """One line of text per picture (--psm 7), as a list of strings in the same order.
         chars: the only characters it may answer with."""
         if not images:
             return []
+        if time.monotonic() < self.paused_until:        # (it just hung: every look asking would wait the timeout again)
+            raise TesseractError("Tesseract timed out a moment ago and is being left alone for a while")
         with tempfile.TemporaryDirectory(prefix="maple-exp-ocr-") as folder:
             names = []
             for i, image in enumerate(images):
@@ -67,8 +72,12 @@ class Tesseract:
             if chars:
                 args += ["-c", f"tessedit_char_whitelist={chars}"]
             self.runs += 1
-            run = subprocess.run(args, capture_output=True, stdin=subprocess.DEVNULL, env=self.env,
-                                 timeout=self.timeout, cwd=folder, **_hidden())
+            try:
+                run = subprocess.run(args, capture_output=True, stdin=subprocess.DEVNULL, env=self.env,
+                                     timeout=self.timeout, cwd=folder, **_hidden())
+            except subprocess.TimeoutExpired:
+                self.paused_until = time.monotonic() + PAUSE_AFTER_TIMEOUT
+                raise TesseractError(f"Tesseract didn't answer within {self.timeout} seconds") from None
         if run.returncode != 0:
             raise TesseractError(run.stderr.decode("utf-8", "replace").strip()[-300:] or f"exit code {run.returncode}")
         out = run.stdout.decode("utf-8", "replace")

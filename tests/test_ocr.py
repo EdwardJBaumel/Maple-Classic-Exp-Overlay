@@ -8,6 +8,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 os.environ["MAPLE_EXP_DATA"] = tempfile.mkdtemp()           # never touch your real data
@@ -65,6 +66,51 @@ except ocr.TesseractError as e:
     check("a failing Tesseract is an error that says why", "data file" in str(e))
 n = len(calls)
 check("no pictures means no run", t.read_lines([]) == [] and len(calls) == n)
+
+# a Tesseract that hangs ends each run at the timeout: the wait is paid once, then it is left alone for a while
+# (every look asks for it: the class, the map name, the badge; 30 s each would freeze the whole reading)
+clock = [1000.0]
+real_monotonic = time.monotonic
+time.monotonic = lambda: clock[0]
+hang_runs = []
+
+
+def hangs(args, **kw):
+    hang_runs.append(kw["timeout"])
+    raise subprocess.TimeoutExpired(args, kw["timeout"])
+
+
+def asks(h):
+    try:
+        return h.read_lines(two)
+    except ocr.TesseractError as e:
+        return str(e)
+    except Exception as e:
+        return type(e).__name__
+
+
+try:
+    ocr.subprocess.run = hangs
+    h = ocr.Tesseract(r"C:\somewhere\tesseract.exe", timeout=30)
+    got = asks(h)
+    check(f"a run that times out is a TesseractError saying so ({got})", "30" in got and len(hang_runs) == 1)
+    for _ in range(5):
+        clock[0] += 10
+        asks(h)
+    check(f"...and for the next minute Tesseract isn't started again ({len(hang_runs)} run in 50 s)", len(hang_runs) == 1)
+    clock[0] += 20
+    asks(h)
+    check("...then it gets another try", len(hang_runs) == 2)
+    ocr.subprocess.run = fake_run("12\r\n\f34\r\n")
+    clock[0] += 61
+    check("...and once a run works it is used as usual", [x.strip() for x in h.read_lines(two)] == ["12", "34"])
+    ocr.subprocess.run = hangs
+    clock[0] += 1
+    asks(h)
+    check("...a fresh hang pauses it again", len(hang_runs) == 3)
+finally:
+    time.monotonic = real_monotonic
+ocr.subprocess.run = real_run
 ocr.subprocess.run = real_run
 
 # ---- with the real Tesseract: one run for many pictures gives the same text as one run each
