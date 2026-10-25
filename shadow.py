@@ -160,9 +160,10 @@ class Shadow:
     # ---- for the bug report
     def facts(self):
         """The counts, the latest answers and the disagreements, as a plain dict (see report.details)."""
-        n = len(self.times)
+        times = list(self.times)            # (the reading thread adds to these while this runs on the main thread)
+        n = len(times)
         return {"on": self.on, "stopped": self.stopped, "thinned": self.thinned,
                 "counts": {k: self.counts[k] for k in CATEGORIES + ("grabs", "runs")},
-                "v2_ms": round(sum(t[1] for t in self.times) / n, 1) if n else None,
-                "old_ms": round(sum(t[0] for t in self.times) / n, 1) if n else None,
+                "v2_ms": round(sum(t[1] for t in times) / n, 1) if n else None,
+                "old_ms": round(sum(t[0] for t in times) / n, 1) if n else None,
                 "last": self.last, "diffs": list(self.diffs)}

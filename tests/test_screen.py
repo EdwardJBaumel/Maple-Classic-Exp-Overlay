@@ -1520,6 +1520,33 @@ check("shadow: v2's own grab raising is a counted shadow error, today's reading 
       got.confident and got.shadow and got.shadow[0] == "errors" and boom.shadow.counts["errors"] == 1
       and boom.part_errors["reader v2"] == 1 and boom.read(boom_scr).shadow is None)
 
+# facts() for the bug report is read on the main thread while the reading thread adds looks
+race = shadow_unit(GOOD, cost_ms=0.0)
+race.fits = lambda e, p: True
+stop_flag = []
+
+
+def hammer():
+    while not stop_flag:
+        race.look(img, GOOD, 5.0)
+
+
+worker = threading.Thread(target=hammer)
+old_switch = sys.getswitchinterval()
+sys.setswitchinterval(1e-6)
+worker.start()
+race_error = None
+try:
+    for _ in range(3000):
+        race.facts()
+except Exception as e:
+    race_error = e
+finally:
+    stop_flag.append(1)
+    worker.join()
+    sys.setswitchinterval(old_switch)
+check(f"shadow: facts() for the bug report is safe while the reading thread adds looks ({race_error!r})", race_error is None)
+
 m.TESS, m.tesseract_ok = before_tess
 
 # ---- reader v2 on bars drawn from the font itself (exact truth), including ones with a digit lost
