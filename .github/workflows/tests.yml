@@ -25,10 +25,16 @@ jobs:
         run: python -m pip install --require-hashes -r requirements-build.txt
       - name: Logic tests
         run: python tests/test_logic.py
+      - name: Screen-reading tests
+        run: python tests/test_screen.py
+      - name: Health report tests
+        run: python tests/test_health.py
       - name: Map-name matching tests (the site's)
         run: node server/test_mapnames.mjs
       - name: Old-address redirect test (the site's)
         run: node server/test_redirect.mjs
+      - name: Health summary script tests (the owner's)
+        run: node server/test_health_summary.mjs
       - name: Bug report tests
         run: python tests/test_report.py
       - name: Text-reading tests (Tesseract, when installed)
@@ -55,10 +61,14 @@ jobs:
         run: python tests/test_logic.py
       - name: Screen-reading tests
         run: python tests/test_screen.py
+      - name: Health report tests
+        run: python tests/test_health.py
       - name: Map-name matching tests (the site's)
         run: node server/test_mapnames.mjs
       - name: Old-address redirect test (the site's)
         run: node server/test_redirect.mjs
+      - name: Health summary script tests (the owner's)
+        run: node server/test_health_summary.mjs
       - name: Bug report tests
         run: python tests/test_report.py
       - name: Text-reading tests (Tesseract, when installed)
