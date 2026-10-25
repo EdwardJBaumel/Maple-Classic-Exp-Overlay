@@ -977,16 +977,16 @@ try:
     check("with sharing blocked (testing) it won't send", (button(dlg, "Send")[0].command(), root.update(), not posted)[2]
           and "off while testing" in dlg.status.cget("text"))
 
+    def wait_until(done, seconds=5):
+        """Keeps the window going until done() (the app's own queue handler answers the send), at most `seconds`."""
+        end = time.monotonic() + seconds
+        while not done() and time.monotonic() < end:
+            root.update()
+            time.sleep(0.05)
+
     os.environ["MAPLE_EXP_ALLOW_SHARE"] = "1"
     button(dlg, "Send")[0].command()
-    for _ in range(50):
-        root.update()
-        time.sleep(0.05)
-        if not app.q.empty():
-            break
-    kind, payload = app.q.get(timeout=2)
-    app._report_done(*payload)
-    root.update()
+    wait_until(lambda: "Sent, thank you" in dlg.status.cget("text"))
     check("Send posts the four fields, with the health ID and the scrubbed text",
           len(posted) == 1 and set(posted[0]) == {"id", "version", "message", "details"}
           and posted[0]["details"] == dlg.details and posted[0]["message"] == "It stopped reading after I changed maps."
@@ -1004,9 +1004,7 @@ try:
         button(d2, "Send")[0].command()
         root.update()
         if n == 2:
-            time.sleep(0.3)
-            kind, payload = app.q.get(timeout=2)
-            app._report_done(*payload)
+            wait_until(lambda: "Sent, thank you" in d2.status.cget("text"))
             check("a 3rd report on the day is still allowed", len(posted) == 2)
         else:
             check("a 4th report on the day is refused locally, in plain words",
