@@ -272,7 +272,13 @@ class HealthLog:
 
     # ---- counting
     def today(self):
-        return self.days.setdefault(utc_day(self.clock()), _new_day())
+        day = utc_day(self.clock())
+        if day not in self.days:
+            self.days[day] = _new_day()
+            earlier = [d for d in self.days if d < day and self.days[d]["snap"]]
+            if earlier:                 # (the overlay only takes a snapshot every few minutes: don't lose a day to that gap)
+                self.days[day]["snap"] = json.loads(json.dumps(self.days[max(earlier)]["snap"]))
+        return self.days[day]
 
     def look(self, kind, percent_only=False, tries=(), ms=None, tracking=0.0, game=None, shadow=None):
         """Counts one look. `kind`: one of EXP_KINDS. `tries`: (part, worked) pairs for the other readers.
