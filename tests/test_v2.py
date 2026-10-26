@@ -1,0 +1,118 @@
+"""Tests for reader v2's shared pieces: the UI-size rule (ui_layout.py), the potion bar's types (potion_bar.py)
+and the second health report contract. No game or screen needed.
+
+Run from the project folder:  python tests/test_v2.py
+"""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+os.environ["MAPLE_EXP_DATA"] = tempfile.mkdtemp()           # never touch your real data
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import exp_font  # noqa: E402
+import potion_bar  # noqa: E402
+import ui_layout as ul  # noqa: E402
+
+failures = 0
+
+
+def check(name, ok):
+    global failures
+    print(("PASS " if ok else "FAIL ") + name)
+    failures += not ok
+
+
+def near(a, b, tol=1e-6):
+    return abs(a - b) <= tol
+
+
+# ---- the UI size: Default grows with the window, Ideal in whole steps
+for w, h in ul.GAME_SIZES + ((5120, 2880), (4096, 2160), (3440, 1440)):
+    pairs = ul.candidate_scales(h)
+    check(f"{w}x{h}: Default is tried first, at window height / 768",
+          pairs[0][0] in ("default", None) and near(pairs[0][1], h / 768))
+    scales = [s for _, s in pairs]
+    check(f"{w}x{h}: no scale is tried twice", all(abs(a - b) > 0.01 * a for i, a in enumerate(scales) for b in scales[i + 1:]))
+    check(f"{w}x{h}: Ideal's own step is tried right after Default (when it differs)",
+          len(pairs) > 1 and pairs[1][0] == "ideal" and pairs[1][1] == ul.ideal_step(h) or near(h / 768, ul.ideal_step(h)))
+    check(f"{w}x{h}: every whole step up to {ul.MAX_STEP} is tried",
+          all(any(near(s, k) for s in scales) for k in range(1, ul.MAX_STEP + 1)))
+
+check("Ideal is 1x at 1080p, 1200 and 1440p (gh 7 seen there)", ul.ideal_step(1080) == ul.ideal_step(1200) == ul.ideal_step(1440) == 1)
+check("Ideal is 2x at 2160 (gh 14 seen at 4K windowed and 4096x2160)", ul.ideal_step(2160) == 2)
+check("Ideal is 2x at 5K fullscreen (gh 14 seen)", ul.ideal_step(2880) == 2)
+check("Ideal never goes below 1x (800x600, 1280x720)", ul.ideal_step(600) == ul.ideal_step(720) == 1)
+check("below 768 Default is smaller than 1x and Ideal stays 1x: both are tried",
+      [m for m, _ in ul.candidate_scales(720)][:2] == ["default", "ideal"] and near(ul.candidate_scales(720)[0][1], 0.9375))
+check("at 768 both modes draw the same: one candidate, mode unknown", ul.candidate_scales(768)[0] == (None, 1.0)
+      and sum(1 for _, s in ul.candidate_scales(768) if near(s, 1.0)) == 1)
+
+# ---- which mode the EXP digit height says (only which: the scale comes from the window)
+check("gh 11 at 1080p: Default", ul.mode_from_gh(11.0, 1080) == ("default", 1080 / 768))
+check("gh 7 at 1080p: Ideal 1x", ul.mode_from_gh(7.0, 1080) == ("ideal", 1.0))
+check("gh 14 at 1440p: Default (Ideal there is 1x, gh 7)", ul.mode_from_gh(14.0, 1440) == ("default", 1440 / 768))
+check("gh 7 at 1440p: Ideal 1x (Send report #5)", ul.mode_from_gh(7.0, 1440) == ("ideal", 1.0))
+check("gh 20 at 4K: Default", ul.mode_from_gh(20.0, 2160) == ("default", 2160 / 768))
+check("gh 14 at 4K: Ideal 2x", ul.mode_from_gh(14.0, 2160) == ("ideal", 2.0))
+check("gh 14 at 5K fullscreen: Ideal 2x", ul.mode_from_gh(14.0, 2880) == ("ideal", 2.0))
+check("at 768 it can't tell", ul.mode_from_gh(7.0, 768) is None)
+check("at 1280x720 it can't tell (both modes give about 7)", ul.mode_from_gh(7.0, 720) is None)
+check("no gh: can't tell", ul.mode_from_gh(None, 1080) is None and ul.mode_from_gh(0, 1080) is None)
+check("a gh that fits neither mode: can't tell", ul.mode_from_gh(30.0, 1080) is None)
+check("the gh table never goes down as windows grow",
+      all(ul.default_gh(h) <= ul.default_gh(h + 10) for h in range(500, 3000, 10)))
+
+# ---- design area <-> window
+for w, h in ((1024, 768), (1920, 1080), (3840, 2160), (5120, 2880)):
+    for s in (h / 768, 1.0, 2.0):
+        x, y = ul.design_to_window(760.0, 573.0, w, h, s)
+        bx, by = ul.window_to_design(x, y, w, h, s)
+        check(f"{w}x{h} at {s:.3f}x: a point goes there and back", near(bx, 760.0, 1e-6) and near(by, 573.0, 1e-6))
+    check(f"{w}x{h}: the design area's bottom centre is the window's", ul.design_to_window(512, 768, w, h, 2.0) == (w / 2, h))
+# The same place the EXP font puts its text (exp_font.text_origin) at UI Size Default.
+font = exp_font.load()
+o = font["scale"]["origin"]
+for w, h in ((1920, 1080), (2560, 1440)):
+    check(f"{w}x{h}: the same rule as the EXP font's text origin",
+          all(near(a, b) for a, b in zip(ul.design_to_window(o["x"], o["y"], w, h, h / 768), exp_font.text_origin(w, h))))
+# Where today's potion reader puts the bar (5120x2880 reference, 930 px right of centre, 730 up), in design pixels.
+x, y = ul.design_to_window(512 + 930 / 3.75, 768 - 730 / 3.75, 1920, 1080, 1.0)
+check("Ideal at 1080p puts the potion bar where it was found on the Ideal frames (1208, 885)",
+      near(x, 1208.0, 0.5) and near(y, 1080 - 730 / 3.75, 0.5))
+
+# ---- the potion bar's types (other tickets build against these exact fields)
+check("SlotSpot fields", potion_bar.SlotSpot._fields == ("index", "rect", "style"))
+check("BarLook fields", potion_bar.BarLook._fields == ("layout", "mode", "scale", "origin", "slots"))
+check("SlotRead fields", potion_bar.SlotRead._fields == ("index", "rect", "style", "item", "kind", "count"))
+check("PotionLook fields", potion_bar.PotionLook._fields == ("seen", "layout", "mode", "scale", "slots"))
+check("Hint fields", potion_bar.Hint._fields == ("last", "mode_scale"))
+check("layouts: keyboard and the two controller D-pad modes",
+      potion_bar.LAYOUTS == ("keyboard", "controller-standard", "controller-cross"))
+check("controller layouts are told apart from keyboard", [potion_bar.is_controller(x) for x in potion_bar.LAYOUTS]
+      == [False, True, True] and not potion_bar.is_controller(None))
+check("not built yet: the reader says 'not seen', never a guess",
+      potion_bar.read_potions(None, 1920, 1080) == potion_bar.NOT_SEEN and not potion_bar.NOT_SEEN.seen)
+
+# ---- the second health report contract (tickets 10 and 11 test the site and the overlay against it)
+here = Path(__file__).parent
+old = json.loads((here / "health_contract.json").read_text(encoding="utf-8"))
+new = json.loads((here / "health_contract_v2.json").read_text(encoding="utf-8"))
+check("contract v2 keeps every valid case of the first one", all(c in new["health_valid"] for c in old["health_valid"]))
+check("contract v2 keeps every invalid case of the first one", all(c in new["health_invalid"] for c in old["health_invalid"]))
+check("contract v2 keeps the Send report cases", new["report_valid"] == old["report_valid"]
+      and new["report_invalid"] == old["report_invalid"])
+NEW = ("ui", "shadow_mesos", "shadow_party", "shadow_why")
+for key in NEW:
+    check(f"contract v2 has a valid case with {key}", any(key in c["body"] for c in new["health_valid"]))
+    check(f"contract v2 has invalid cases for {key}", any(c["field"] == key for c in new["health_invalid"]))
+biggest = max((c["body"] for c in new["health_valid"]), key=lambda b: len(json.dumps(b, separators=(",", ":"))))
+check("the biggest valid body fits the site's 4,096-byte cap", len(json.dumps(biggest, separators=(",", ":")).encode()) <= 4096)
+for c in new["health_valid"]:
+    b = c["body"]
+    check(f"'{c['name']}': every new count is at most 'looks'",
+          all(v <= b["looks"] for k in ("ui", "shadow_why") if k in b for v in b[k].values()))
+
+print("\nALL PASSED" if not failures else f"\n{failures} FAILED")
+sys.exit(1 if failures else 0)

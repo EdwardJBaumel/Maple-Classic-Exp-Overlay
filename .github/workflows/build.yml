@@ -66,6 +66,7 @@ jobs:
           python tests/test_ocr.py
           python tests/test_report.py
           python tests/test_health.py
+          python tests/test_v2.py
       - name: Build
         run: python build.py
       - name: Keep the unsigned build
