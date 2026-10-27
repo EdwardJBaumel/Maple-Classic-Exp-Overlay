@@ -712,6 +712,22 @@ check("a big jump just before that wait is still a shop visit",
 check("scale_box moves a mesos box from 1024x768 to 2560x1440",
       m.scale_box((801, 473, 143, 14), (1024, 768), (2560, 1440)) == (2002, 887, 358, 26))
 check("scale_box leaves bad sizes alone", m.scale_box((10, 10, 20, 12), (0, 768), (2560, 1440)) is None)
+check("fmt_ago: under 3 s is 'just now'", m.fmt_ago(1.2) == "just now")
+check("fmt_ago: seconds and minutes", m.fmt_ago(12) == "12s ago" and m.fmt_ago(125) == "2m ago")
+rows = m.feature_read_status(
+    exp={"ok": True}, mesos={"value": 100000, "seen_at": 1000}, map_name={"name": "Rocky Road II"},
+    potions={"on": True, "ok": True}, now=1005)
+check("feature_read_status: all green when everything is fresh",
+      [r[1] for r in rows] == ["ok", "ok", "ok", "ok"])
+rows = m.feature_read_status(
+    exp={"looking": True}, mesos={"value": None}, map_name={}, potions={"on": False}, now=0)
+check("feature_read_status: waiting / off when nothing is ready",
+      [r[1] for r in rows] == ["wait", "wait", "wait", "off"])
+rows = m.feature_read_status(
+    exp={"ok": True}, mesos={"value": 100000, "seen_at": 0}, map_name={"name": "X"},
+    potions={"on": True, "looking": True}, now=m.MESO_STALE_SECONDS + 5)
+check("feature_read_status: mesos go stale after a minute closed",
+      dict(r[:2] for r in rows)["Mesos"] == "stale")
 check("good_mesos_boxes accepts a few WxH keys",
       m.good_mesos_boxes({"1024x768": [801, 473, 143, 14], "2560x1440": [2000, 880, 350, 26]}))
 check("good_mesos_boxes rejects a bad key", not m.good_mesos_boxes({"1024": [1, 2, 3, 4]}))
@@ -751,6 +767,7 @@ try:
     got = reader._game_rect()
     check("resize to a remembered size restores that mesos box",
           got == fake.rect and reader.mesos_box == (2000, 880, 350, 26)
+          and reader.mesos_provisional is False
           and reader.box == m.scale_box((400, 720, 200, 30), (1024, 768), (2560, 1440)))
     fake.rect = (0, 0, 1920, 1080)
     reader.size = (2560, 1440)
@@ -758,9 +775,10 @@ try:
     reader.box = (1000, 1350, 500, 56)
     reader.saved_mesos_boxes = {"2560x1440": (2000, 880, 350, 26)}
     got = reader._game_rect()
-    check("resize to an unknown size scales the last mesos and EXP boxes",
+    check("resize to an unknown size scales the last mesos and EXP boxes provisionally",
           got == fake.rect
           and reader.mesos_box == m.scale_box((2000, 880, 350, 26), (2560, 1440), (1920, 1080))
+          and reader.mesos_provisional is True
           and reader.box == m.scale_box((1000, 1350, 500, 56), (2560, 1440), (1920, 1080)))
 finally:
     m.PLATFORM = old_plat

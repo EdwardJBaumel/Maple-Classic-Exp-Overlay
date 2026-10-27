@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+**Reading status**
+- Optional row of dots under the big number (Settings → "Show reading status"): EXP, Mesos, Map and Potions. Green = readable, yellow = holding the last look, red = can't read. Hover a label for details. Off by turning the switch off.
+- Details → Mesos shows how long ago the inventory was last looked at. After a minute closed, the status line asks you to open it again (while still holding the last rate).
+- Pressing Start with no mesos baseline yet asks you to open the inventory once.
+
 **Mesos tracking**
-- Remembers the mesos box for each game-window size (not just the last one), and when you resize the game it scales the last EXP and mesos spots so tracking doesn't start from scratch.
+- Remembers the mesos box for each game-window size (not just the last one), and when you resize the game it scales the last EXP and mesos spots so tracking doesn't start from scratch. A scaled guess is only saved after a clean mesos read.
 - A digit in the mesos box can sit about a pixel off its usual spot and still be read right.
 - After the inventory has been closed for 45 seconds (was 120), a big rise is counted as mesos you picked up, not a shop visit — so opening the inventory now and then while farming keeps mesos/hr updating.
 
