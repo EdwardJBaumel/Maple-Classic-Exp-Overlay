@@ -48,7 +48,7 @@ You need Windows 10 or 11. It takes about 2 minutes, and you don't need to insta
 4. **Press Start** and play normally. You only need to press it once:
    - It **pauses by itself** when you get no EXP for 15 seconds or leave the map, and carries on at your next EXP gain. Paused time doesn't count, so EXP/hr only covers your farming.
    - On a different map, the numbers start from zero for that map.
-5. **Want mesos tracked?** Open your inventory (any tab) when you start, and now and then while you play. It doesn't have to stay open. If the overlay asks you to open it, do. Mesos you spend or move at a shop, storage or trade are left out, so only mesos you pick up count.
+5. **Want mesos tracked?** Open your inventory (any tab) when you start, and now and then while you play. It doesn't have to stay open: it remembers the last amount and updates mesos/hr the next time you open it. If the overlay asks you to open it, do. Mesos you spend or move at a shop, storage or trade are left out, so only mesos you pick up count. If you resize the game window, it remaps the mesos and EXP spots to the new size.
 6. **Want net mesos?** Keep the potions you use on the quick-slot bar. See [Net mesos and potions](#net-mesos-and-potions).
 
 Within a few seconds it shows your level and how much EXP you have. The per-hour numbers fill in once you've gained a little EXP.

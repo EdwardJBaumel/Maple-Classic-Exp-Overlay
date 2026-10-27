@@ -90,7 +90,8 @@ ICON_PATH = ASSETS / "icon.ico"
 POLL_SECONDS = 1.5          # how often to read the EXP bar
 WORKER_RETRY_SECONDS = 5       # if the reading thread can't open the screen: how long to wait before trying again
 ROLLING_WINDOW = 300        # seconds used for the "last 5 min" rate
-MESO_GAP = 120              # seconds without a mesos look after which a rise is believed, however big
+MESO_GAP = 45               # seconds without a mesos look after which a rise is believed, however big
+MESOS_BOXES_MAX = 8         # window sizes whose mesos box is remembered in the config
 SEARCH_STRIP = 0.22         # bottom part of the game window searched for the EXP text
 LOG_PATH = DATA_DIR / "exp_log.json"
 LOG_TEXT_PATH = DATA_DIR / "exp_log.txt"
@@ -250,6 +251,26 @@ def good_v2_spots(v):
                     and len(b) == 4 and all(type(x) is int for x in b) for k, b in v.items()))
 
 
+def good_mesos_boxes(v):
+    """mesos_boxes in the config: {"WxH": [x, y, w, h]}, a few at most."""
+    return (isinstance(v, dict) and len(v) <= MESOS_BOXES_MAX
+            and all(isinstance(k, str) and re.fullmatch(r"\d{3,5}x\d{3,5}", k) and isinstance(b, list)
+                    and len(b) == 4 and all(type(x) is int for x in b) for k, b in v.items()))
+
+
+def scale_box(box, old_size, new_size):
+    """(x, y, w, h) moved from one game-window size to another, or None if it can't be scaled."""
+    if not box or not old_size or not new_size:
+        return None
+    ow, oh = old_size
+    nw, nh = new_size
+    if ow <= 0 or oh <= 0 or nw <= 0 or nh <= 0:
+        return None
+    sx, sy = nw / ow, nh / oh
+    x, y, w, h = box
+    return (round(x * sx), round(y * sy), max(1, round(w * sx)), max(1, round(h * sy)))
+
+
 def load_config():
     """The saved settings, with anything missing or damaged replaced by the defaults."""
     try:
@@ -285,6 +306,7 @@ def load_config():
               "share_health": lambda v: type(v) is bool,     # (same: the daily health report)
               "health_id": healthlog.good_id,
               "exp_v2_spots": good_v2_spots,                  # (where reader v2 found the bar, by window size)
+              "mesos_boxes": good_mesos_boxes,                # (where the mesos box was, by window size)
               "reports_sent": lambda v: isinstance(v, dict) and isinstance(v.get("day"), str) and type(v.get("n")) is int and v["n"] >= 0}
     for key, ok in checks.items():
         if key in cfg and not (cfg[key] is None and key == "log_size") and not ok(cfg[key]):    # (a null log_size is saved on purpose)
@@ -1477,6 +1499,18 @@ def _mesos_spot(field, i):
     return x + w - (MESOS_FIRST + i * MESOS_PITCH + (max(i, 0) // 3) * MESOS_COMMA) * h
 
 
+def _match_near(templates, lay, cx, h):
+    """Match at cx and about a pixel either side. A shifted spot wins only if it scores at
+    least 0.02 higher, so well-placed digits read exactly as before."""
+    digit, score, lead = templates.match(lay, (cx, 0.4 * h, "digit"))
+    best = (digit, score, lead, cx)
+    for dx in (-h / 14, h / 14):
+        d, s, l = templates.match(lay, (cx + dx, 0.4 * h, "digit"))
+        if s >= best[1] + 0.02:
+            best = (d, s, l, cx + dx)
+    return best
+
+
 def _mesos_strokes(bgr, field):
     """A Layout for matching digits in the mesos box: how much darker each pixel is than
     the box around it (works solid or see-through)."""
@@ -1493,8 +1527,8 @@ def mesos_box_lines_up(bgr, field, templates):
     a '1'), and just right of it there must be no digit (else the box is a digit too far
     left and the number would be read short)."""
     lay, h = _mesos_strokes(bgr, field), field[3]
-    _, first, _ = templates.match(lay, (_mesos_spot(field, 0), 0.4 * h, "digit"))
-    _, after, _ = templates.match(lay, (_mesos_spot(field, -1), 0.4 * h, "digit"))
+    _, first, _, _ = _match_near(templates, lay, _mesos_spot(field, 0), h)
+    _, after, _, _ = _match_near(templates, lay, _mesos_spot(field, -1), h)
     return first >= 0.85 and after < 0.84
 
 
@@ -1516,7 +1550,7 @@ def read_mesos_positions(bgr, field, templates, digit_count=None):
         cx = _mesos_spot(field, i)
         if cx - 0.3 * h < x:
             break
-        digit, score, lead = templates.match(lay, (cx, 0.4 * h, "digit"))
+        digit, score, lead, cx = _match_near(templates, lay, cx, h)
         empty = bool(digits) and score < 0.65
         if ended:
             # A clear digit after the end means one was missed in between. (Only a clear
@@ -1779,7 +1813,8 @@ class ScreenReader:
         self.next_map_search = 0.0
         self.next_map_read = 0.0
         self.mesos_box = None       # the inventory's mesos box, relative to the game window
-        self.saved_mesos = None     # (window w, h, x, y, w, h) remembered from last time
+        self.saved_mesos = None     # (window w, h, x, y, w, h) remembered from last time (legacy)
+        self.saved_mesos_boxes = {} # {"WxH": (x, y, w, h)} remembered for each window size
         self.box_finder = MesosBoxFinder()
         self.mesos_digits = MesosDigits()
         self.mesos_checked = None   # last mesos number Tesseract confirmed
@@ -1892,6 +1927,7 @@ class ScreenReader:
         self.v2_spot = None
         self.map_box, self.map_print = None, None
         self.mesos_box = self.saved_mesos = None
+        self.saved_mesos_boxes = {}
         self.mesos_fails, self.mesos_count, self.mesos_pending = 0, None, (None, 0)
         self.mesos_covered, self.party_area, self.next_scan = False, None, 0.0
         self.two_boxes, self.next_outline = False, 0.0
@@ -2076,19 +2112,35 @@ class ScreenReader:
             self._level_candidate, self.level_failures = seen, 0
             self.next_level_read = now + 1.5
 
+    def _mesos_for_size(self, size):
+        """The mesos box last known for this window size, or None."""
+        key = f"{size[0]}x{size[1]}"
+        box = self.saved_mesos_boxes.get(key)
+        if box:
+            return tuple(box)
+        saved = self.saved_mesos
+        if saved and tuple(saved[:2]) == tuple(size):
+            return tuple(saved[2:])
+        return None
+
     def _game_rect(self):
         if not (self.hwnd and PLATFORM.window_exists(self.hwnd)):
             self.hwnd, self.box, self.map_box = PLATFORM.find_game_window(), None, None
         rect = PLATFORM.client_rect(self.hwnd) if self.hwnd else None
-        if rect and rect[2:] != self.size:                  # resized: find everything again
-            self.size, self.box, self.map_box, self.gh = rect[2:], None, None, None
+        if rect and rect[2:] != self.size:                  # resized: remap what we can, find the rest again
+            old_size, old_mesos, old_exp = self.size, self.mesos_box, self.box
+            self.size, self.map_box, self.gh = rect[2:], None, None
             self.v2_spot = None
             self.exp_anchor, self.next_job_read = None, 0.0
-            self.mesos_box, self.party_area, self.next_scan = None, None, 0.0
+            self.party_area, self.next_scan = None, 0.0
             self.window, self.window_until, self.window_box = None, 0.0, False
-            saved = self.saved_mesos
-            if saved and tuple(saved[:2]) == tuple(rect[2:]):
-                self.mesos_box = tuple(saved[2:])           # where it was last time
+            # Prefer the box remembered for this exact size; otherwise scale the last one so
+            # tracking doesn't start over from scratch after a resize or UI-size change.
+            self.mesos_box = self._mesos_for_size(rect[2:])
+            if self.mesos_box is None and old_mesos and old_size:
+                self.mesos_box = scale_box(old_mesos, old_size, rect[2:])
+            self.box = scale_box(old_exp, old_size, rect[2:]) if old_exp and old_size else None
+            self.mesos_fails = 0
         return rect
 
     def _hide_own(self, shot, screen_copy=False):
@@ -2947,9 +2999,9 @@ class MesoTracker:
     """Turns mesos readings into mesos gained per hour and per 5 minutes.
 
     The first count is the baseline; every later one adds what changed since. The
-    inventory doesn't have to stay open: after a long wait (MESO_GAP) a big rise is
-    believed, and the rates cover the run up to the last look, so they hold still
-    while the inventory is closed.
+    inventory doesn't have to stay open: after a short wait (MESO_GAP) a big rise is
+    believed (you weren't dropping mesos while it was closed), and the rates cover the
+    run up to the last look, so they hold still while the inventory is closed.
 
     A new count only counts once two readings in a row agree on it (three for a big jump),
     so a one-off misread never shows up as mesos gained. A change by more than half,
@@ -4173,6 +4225,14 @@ class App:
         saved = self.cfg.get("mesos_box")
         if isinstance(saved, list) and len(saved) == 6:
             self.reader.saved_mesos = tuple(saved)
+        boxes = self.cfg.get("mesos_boxes") or {}
+        if isinstance(boxes, dict):
+            self.reader.saved_mesos_boxes = {k: tuple(v) for k, v in boxes.items()
+                                            if isinstance(v, list) and len(v) == 4}
+            # A single legacy mesos_box fills the dict so a resize back to that size still finds it.
+            if isinstance(saved, list) and len(saved) == 6:
+                key = f"{saved[0]}x{saved[1]}"
+                self.reader.saved_mesos_boxes.setdefault(key, tuple(saved[2:]))
         self.reader.saved_v2 = dict(self.cfg.get("exp_v2_spots") or {})
         self.reader.shadow.on = self.cfg["shadow_reader"]           # (reader v2 in shadow mode: off with shadow_reader false)
         self.session = Session(self.cfg["gap_seconds"])
@@ -5524,9 +5584,15 @@ class App:
             self.last_capture = r
         if r.mesos_image is not None:
             self.last_mesos = r
-        if r.mesos_at:                                  # remember where the mesos box is
+        if r.mesos_at:                                  # remember where the mesos box is (per window size)
             self.cfg["mesos_box"] = list(r.mesos_at)
             self.reader.saved_mesos = tuple(r.mesos_at)
+            ww, wh, *box = r.mesos_at
+            key = f"{ww}x{wh}"
+            spots = {k: v for k, v in (self.cfg.get("mesos_boxes") or {}).items() if k != key}
+            spots[key] = list(box)
+            self.cfg["mesos_boxes"] = dict(list(spots.items())[-MESOS_BOXES_MAX:])
+            self.reader.saved_mesos_boxes = {k: tuple(v) for k, v in self.cfg["mesos_boxes"].items()}
             save_config(self.cfg)
         if r.v2_at:                                     # ...and where reader v2 found the EXP bar
             key, box = r.v2_at
@@ -5934,6 +6000,9 @@ class App:
         self.reader.look_again()
         self.map_name, self.party, self._party_seen = None, 1, (None, 0)
         self.cfg.pop("mesos_box", None)
+        self.cfg.pop("mesos_boxes", None)
+        self.reader.saved_mesos = None
+        self.reader.saved_mesos_boxes = {}
         save_config(self.cfg)
         self.status.set("Reset. Looking for the map name, inventory and party list again...")
 

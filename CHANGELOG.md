@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Mesos tracking**
+- Remembers the mesos box for each game-window size (not just the last one), and when you resize the game it scales the last EXP and mesos spots so tracking doesn't start from scratch.
+- A digit in the mesos box can sit about a pixel off its usual spot and still be read right.
+- After the inventory has been closed for 45 seconds (was 120), a big rise is counted as mesos you picked up, not a shop visit — so opening the inventory now and then while farming keeps mesos/hr updating.
+
 ## 0.9.13-beta
 
 **Fewer reading problems**

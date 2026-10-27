@@ -697,6 +697,74 @@ looks(t, 400000, 5)
 check("a big jump seen at once (inventory open all the time) is still a shop visit",
       t.value == 400000 and t.gained == 0)
 
+t = m.MesoTracker()
+looks(t, 100000, 0)
+looks(t, 400000, m.MESO_GAP + 1)
+check("a big rise after the inventory was closed briefly is earned (not a shop visit)",
+      t.value == 400000 and t.gained == 300000)
+t = m.MesoTracker()
+looks(t, 100000, 0)
+looks(t, 400000, max(1, m.MESO_GAP - 1))
+check("a big jump just before that wait is still a shop visit",
+      t.value == 400000 and t.gained == 0)
+
+# ---- mesos box remembered across window sizes, and scaled on a resize
+check("scale_box moves a mesos box from 1024x768 to 2560x1440",
+      m.scale_box((801, 473, 143, 14), (1024, 768), (2560, 1440)) == (2002, 887, 358, 26))
+check("scale_box leaves bad sizes alone", m.scale_box((10, 10, 20, 12), (0, 768), (2560, 1440)) is None)
+check("good_mesos_boxes accepts a few WxH keys",
+      m.good_mesos_boxes({"1024x768": [801, 473, 143, 14], "2560x1440": [2000, 880, 350, 26]}))
+check("good_mesos_boxes rejects a bad key", not m.good_mesos_boxes({"1024": [1, 2, 3, 4]}))
+
+m.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+m.CONFIG_PATH.write_text(json.dumps({
+    "mesos_box": [1024, 768, 801, 473, 143, 14],
+    "mesos_boxes": {"2560x1440": [2000, 880, 350, 26]},
+}), encoding="utf-8")
+cfg = m.load_config()
+check("load_config keeps legacy mesos_box and mesos_boxes together",
+      cfg["mesos_box"] == [1024, 768, 801, 473, 143, 14]
+      and cfg["mesos_boxes"] == {"2560x1440": [2000, 880, 350, 26]})
+
+# A ScreenReader remaps the mesos and EXP boxes when the game window changes size.
+class FakePlatform:
+    def __init__(self):
+        self.rect = (0, 0, 1024, 768)
+    def window_exists(self, hwnd):
+        return True
+    def client_rect(self, hwnd):
+        return self.rect
+    def find_game_window(self):
+        return 1
+
+fake = FakePlatform()
+old_plat = m.PLATFORM
+m.PLATFORM = fake
+try:
+    reader = m.ScreenReader(None)
+    reader.hwnd = 1
+    reader.size = (1024, 768)
+    reader.mesos_box = (801, 473, 143, 14)
+    reader.box = (400, 720, 200, 30)
+    reader.saved_mesos_boxes = {"2560x1440": (2000, 880, 350, 26)}
+    fake.rect = (0, 0, 2560, 1440)
+    got = reader._game_rect()
+    check("resize to a remembered size restores that mesos box",
+          got == fake.rect and reader.mesos_box == (2000, 880, 350, 26)
+          and reader.box == m.scale_box((400, 720, 200, 30), (1024, 768), (2560, 1440)))
+    fake.rect = (0, 0, 1920, 1080)
+    reader.size = (2560, 1440)
+    reader.mesos_box = (2000, 880, 350, 26)
+    reader.box = (1000, 1350, 500, 56)
+    reader.saved_mesos_boxes = {"2560x1440": (2000, 880, 350, 26)}
+    got = reader._game_rect()
+    check("resize to an unknown size scales the last mesos and EXP boxes",
+          got == fake.rect
+          and reader.mesos_box == m.scale_box((2000, 880, 350, 26), (2560, 1440), (1920, 1080))
+          and reader.box == m.scale_box((1000, 1350, 500, 56), (2560, 1440), (1920, 1080)))
+finally:
+    m.PLATFORM = old_plat
+
 # ---- mesos moved at a shop, storage or trade window aren't earned: the change between the
 # window opening and closing is left out, in both directions
 def at_window(kind, start, steps):
