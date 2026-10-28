@@ -25,15 +25,21 @@ NOTICE_BOX = (0.58, 0.16, 0.98, 0.78)
 ROLLING_WINDOW = 300
 MATCH_MIN = 0.78                # how close an OCR item name must be to a known price name
 
-# Classic-style notice lines (OCR may drop "You have", commas, etc.).
+# Classic / MapleBuddy-style notice lines (OCR may drop "You have", commas, etc.).
 _MESO = re.compile(
-    r"gained\s+mesos?\s*(?:\(?\s*\+?\s*([\d.,]+)\s*\)?|\s*\+?\s*([\d.,]+))",
+    r"(?:gained|received)\s+mesos?\s*(?:\(?\s*\+?\s*([\d.,]+)\s*\)?|\s*\+?\s*([\d.,]+))",
     re.I,
 )
-_ITEM_PAREN = re.compile(r"gained\s+(?:an?\s+)?(?:item\s+)?\(([^)]+)\)", re.I)
+# "You have gained mesos (+14)" with OCR gluing the number oddly, or just "+1,234 mesos"
+_MESO_LOOSE = re.compile(r"\+?\s*([\d.,]{1,12})\s*\)?\s*mesos?\b", re.I)
+_ITEM_PAREN = re.compile(
+    r"gained\s+(?:an?\s+)?item\b(?:\s+in\s+the\s+\w+\s+tab)?\s*\(([^)]+)\)",
+    re.I,
+)
 _ITEM_A = re.compile(r"gained\s+(?:an?\s+)(?!item\b)(.+?)(?:\.\s*\[|\s*\[\d|\s*$)", re.I)
-_EXP = re.compile(r"gained\s+experience|\bexp\b\s*\(|\bfame\b", re.I)
+_EXP = re.compile(r"(?:gained|received)\s+experience|\breceived\s+exp\b|\bexp\b\s*\(|\bfame\b", re.I)
 _LOST = re.compile(r"\blost\b", re.I)
+_BARE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9' .\-]{1,48}$")
 _DIGITS = re.compile(r"[^\d]")
 
 
@@ -106,20 +112,36 @@ def clean_ocr(text):
     return text
 
 
+def _meso_amount(raw):
+    digits = _DIGITS.sub("", raw or "")
+    if not digits:
+        return None
+    try:
+        n = int(digits)
+    except ValueError:
+        return None
+    return n if 1 <= n <= 99_999_999 else None
+
+
 def parse_line(text):
-    """('meso', amount) or ('item', name) for a Classic notice, or None to ignore."""
+    """('meso', amount) or ('item', name) for a Classic notice, or None to ignore.
+
+    Bare item-name lines (just 'Pig\\'s Ribbon' in yellow) are left as None here; the
+    tracker prices them against the loot table so EXP/chat noise isn't treated as loot.
+    """
     text = clean_ocr(text)
     if not text or _LOST.search(text) or _EXP.search(text):
         return None
     m = _MESO.search(text)
     if m:
-        raw = m.group(1) or m.group(2) or ""
-        digits = _DIGITS.sub("", raw)
-        if digits:
-            try:
-                return ("meso", int(digits))
-            except ValueError:
-                return None
+        n = _meso_amount(m.group(1) or m.group(2))
+        if n is not None:
+            return ("meso", n)
+    m = _MESO_LOOSE.search(text)
+    if m and re.search(r"meso", text, re.I):
+        n = _meso_amount(m.group(1))
+        if n is not None:
+            return ("meso", n)
     m = _ITEM_PAREN.search(text)
     if m:
         name = m.group(1).strip(" .")
@@ -131,6 +153,18 @@ def parse_line(text):
         name = re.sub(r"\s*\[\d.*$", "", name).strip(" .")
         return ("item", name) if len(name) >= 2 else None
     return None
+
+
+def bare_item_name(text):
+    """A line that is only an item name (no 'gained…'), or None."""
+    text = clean_ocr(text)
+    if not text or not _BARE_NAME.match(text):
+        return None
+    if _MESO.search(text) or _EXP.search(text) or _LOST.search(text):
+        return None
+    if re.search(r"\b(mesos?|exp|fame|level|map)\b", text, re.I):
+        return None
+    return text
 
 
 def new_lines(prev, current):
@@ -270,7 +304,8 @@ class NoticeTracker:
         self.read_elapsed = None
         self.counting = False
         self._visible = Counter()
-        self.unpriced = []
+        self.items = Counter()          # priced drop name → how many counted
+        self.unpriced = []              # OCR names that had no sell price (unique, newest last)
         self.left_out = [0, 0]
         self.window_at = None
         self.misreads = []
@@ -278,6 +313,7 @@ class NoticeTracker:
         self.idle_pause = False
         self.bank_inventory = False
         self.bank_window = False
+        self.last_lines = ()            # last OCR lines (for View capture / status)
 
     def pause(self, stale=True, bank_inventory=False):
         """Tracking paused: keep the visible-line set so a still-on-screen notice isn't recounted."""
@@ -306,6 +342,7 @@ class NoticeTracker:
     def observe_lines(self, lines, now, elapsed, running):
         """lines: OCR strings currently visible (empty list = strip looked empty)."""
         cleaned = [clean_ocr(t) for t in (lines or []) if clean_ocr(t)]
+        self.last_lines = tuple(cleaned)
         fresh, self._visible = new_lines(self._visible, cleaned)
         self.seen_at = now
         if not running:
@@ -319,19 +356,25 @@ class NoticeTracker:
         for text in fresh:
             ev = parse_line(text)
             if not ev:
-                continue
+                bare = bare_item_name(text)
+                if bare:
+                    ev = ("item", bare)
+                else:
+                    continue
             kind, payload = ev
             if kind == "meso":
                 self._earn(payload, elapsed)
                 self.mesos_gained += payload
             elif kind == "item":
-                price = sell_value(payload, self.prices, self.aliases)
+                matched = match_priced_name(payload, self.prices, self.aliases)
+                price = None if matched is None else self.prices[matched]
                 if price is None:
                     if payload not in self.unpriced:
-                        self.unpriced.append(payload)
+                        self.unpriced = (self.unpriced + [payload])[-20:]
                 elif price > 0:
                     self._earn(price, elapsed)
                     self.loot_gained += price
+                    self.items[matched] += 1
 
     def _earn(self, amount, elapsed):
         self.gained += amount

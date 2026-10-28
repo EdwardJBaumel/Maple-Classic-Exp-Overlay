@@ -1910,6 +1910,7 @@ class ScreenReader:
         self.next_mesos_check = 0.0
         self.mesos_covered = False  # this app's window is in the way of the mesos
         self.notices_covered = False  # ...or of the right-side gain notices
+        self.notices_look = None      # {"image", "text"} from the last notice strip OCR
         self.meso_mode = "inventory"  # "inventory" or "notices" (set from Settings)
         self.capture = ScreenCapture(None)  # where the pictures come from (set at each look)
         self.two_boxes = False      # a storage / trade window shows a second mesos box
@@ -2018,7 +2019,8 @@ class ScreenReader:
         self.mesos_provisional = False
         self.saved_mesos_boxes = {}
         self.mesos_fails, self.mesos_count, self.mesos_pending = 0, None, (None, 0)
-        self.mesos_covered, self.notices_covered, self.party_area, self.next_scan = False, False, None, 0.0
+        self.mesos_covered, self.notices_covered, self.notices_look = False, False, None
+        self.party_area, self.next_scan = None, 0.0
         self.two_boxes, self.next_outline = False, 0.0
         self.window, self.window_until, self.window_box = None, 0.0, False
         self.exp_anchor, self.next_job_read = None, 0.0
@@ -2549,7 +2551,10 @@ class ScreenReader:
                                 note=" ".join(notes) or None)
 
     def _read_notices(self, capture, rect, notes):
-        """OCR lines from the right-side battle/loot strip, or None if this look couldn't try."""
+        """OCR lines from the right-side battle/loot strip, or None if this look couldn't try.
+
+        Also stores the crop on self.notices_look for View capture.
+        """
         capture = self.capture = as_capture(capture)
         wx, wy, ww, wh = rect
         bx, by, bw, bh = notices.crop_box(ww, wh)
@@ -2563,7 +2568,9 @@ class ScreenReader:
         if not shot:
             return None
         try:
-            return notices.read_strip(shot[0], TESS)
+            lines = notices.read_strip(shot[0], TESS)
+            self.notices_look = {"image": shot[0].copy(), "text": " | ".join(lines) if lines else ""}
+            return lines
         except ocr.TesseractError as e:
             self._part_failed("notices", e)
             return None
@@ -5014,8 +5021,9 @@ class App:
                                   bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "inventory") else "secondary",
                                   command=lambda k=k: pick_meso_mode(k))
             meso_btns[k].pack(side="left", padx=(px(6), 0))
-        tk.Label(body, text="Inventory reads the mesos box. Gain notices reads the floating "
-                            "right-side pickup lines (mesos and valued drops) so you can compare.",
+        tk.Label(body, text="Inventory reads the mesos box. Gain notices OCRs the floating "
+                            "right-side pickup lines (like MapleBuddy): meso gains plus NPC sell "
+                            "value of potions and common etc. Keep Battle Messages on screen.",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
 
         self._section(body, "Window")
@@ -6094,6 +6102,18 @@ class App:
         aliases = dict(getattr(table, "aliases", {}) or {}) if table else {}
         self.session.notices.set_prices({**loot, **potion_sell}, aliases)
 
+    def _left_out_text(self, m, notice_mode):
+        """Details → Left out: shop/storage jumps in inventory mode; unpriced drops in notices mode."""
+        if notice_mode:
+            if not getattr(m, "unpriced", None):
+                return "—"
+            names = ", ".join(m.unpriced[-4:])
+            extra = f" (+{len(m.unpriced) - 4} more)" if len(m.unpriced) > 4 else ""
+            return f"unpriced: {names}{extra}"
+        if any(m.left_out):
+            return f"+{fmt_short(m.left_out[0])} / -{fmt_short(m.left_out[1])}"
+        return "—"
+
     def _update_display(self):
         t, now = self.tracker, time.monotonic()
         rate, rolling = t.rate(), t.rolling_rate()
@@ -6114,6 +6134,8 @@ class App:
                 mesos = "move this window" if self.reader.notices_covered else "waiting for notices"
             else:
                 mesos = f"+{fmt_short(m.gained)}" if m.gained else "0"
+                if m.mesos_gained or m.loot_gained:
+                    mesos += f"  (meso {fmt_short(m.mesos_gained)} · loot {fmt_short(m.loot_gained)})"
                 if ago and meso_age is not None and meso_age > 3:
                     mesos += f"  · {ago}"
         elif m.value is None:
@@ -6155,8 +6177,7 @@ class App:
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
                      "Net mesos / hr": net,
-                     "Left out": (f"+{fmt_short(m.left_out[0])} / -{fmt_short(m.left_out[1])}"
-                                  if any(m.left_out) else "—")},
+                     "Left out": self._left_out_text(m, notice_mode)},
             state=state, state_text=state_text,
             read_health_on=bool(self.cfg.get("read_status", True)),
             read_health=reads)
@@ -6607,6 +6628,10 @@ class App:
         if mr:
             read = fmt_num(mr.mesos) if mr.mesos is not None else "nothing (waiting for a clear look)"
             shots.append((mr.mesos_image, mr.mesos_boxes, f"Mesos. Read: {read}"))
+        look = getattr(self.reader, "notices_look", None)
+        if look and self.cfg.get("meso_mode") == "notices":
+            shots.append((look.get("image"), [],
+                          f"Gain notices. Read: {look.get('text') or 'nothing (no bright lines)'}"))
         for kept in list(self.reader.shadow.kept):
             shots.append((kept["image"], kept["boxes"], f"Reader v2 test ({kept['kind']}). Old: {report.answer_text(kept['old'])}"
                                                         f"   v2: {report.answer_text(kept['v2'])}"))

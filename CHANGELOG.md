@@ -4,8 +4,9 @@
 
 **Mesos / hr from gain notices (optional)**
 - Settings → Tracking → **Mesos / hr from**: choose **Inventory** (the mesos box, as before) or **Gain notices** (the floating right-side battle/loot lines). Switch anytime to A/B test.
-- In gain-notices mode, mesos/hr counts meso pickups plus the NPC sell value of priced potions/food (about half the shop buy price) and a small set of common etc drops. Unpriced drop names are kept for later. EXP lines are ignored.
-- Start no longer asks you to open the inventory in notices mode; the reading-status strip says when notices are being read.
+- In gain-notices mode, mesos/hr counts meso pickups plus the NPC sell value of priced potions/food (about half the shop buy price) and common etc drops. Parses MapleBuddy-style lines (`gained Mesos (+N)`, `item in the Etc tab (Name)`), bare yellow item names, and ignores EXP. Unpriced names show under Details → Left out.
+- Details → Mesos shows `meso · loot` split; View capture includes the notice strip when this mode is on.
+- Start no longer asks you to open the inventory in notices mode; the reading-status strip says when notices are being read. Keep Battle Messages visible on the right of the game.
 
 **Reading status**
 - Optional row of dots under the big number (Settings → "Show reading status"): EXP, Mesos, Map and Potions. Green = readable, yellow = holding the last look, red = can't read. Hover a label for details. Off by turning the switch off.

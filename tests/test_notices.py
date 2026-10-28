@@ -30,10 +30,22 @@ check("parse meso with commas",
       notices.parse_line("You have gained mesos (+1,250)") == ("meso", 1250))
 check("parse item in parentheses",
       notices.parse_line("You have gained an item (Red Potion)") == ("item", "Red Potion"))
+check("parse item in Etc tab",
+      notices.parse_line("You have gained an item in the Etc tab (Pig's Ribbon)") == ("item", "Pig's Ribbon"))
+check("parse MapleBuddy-style received mesos",
+      notices.parse_line("You have gained Mesos (+14)") == ("meso", 14))
+check("parse loose +N mesos",
+      notices.parse_line("+1,250 mesos") == ("meso", 1250))
 check("parse item a Name",
       notices.parse_line("You have gained a Pig's Head") == ("item", "Pig's Head"))
 check("ignore EXP lines",
       notices.parse_line("You have gained experience (+500)") is None)
+check("ignore received EXP",
+      notices.parse_line("You received EXP (+89)") is None)
+check("bare item name helper",
+      notices.bare_item_name("Pig's Ribbon") == "Pig's Ribbon")
+check("bare helper rejects meso noise",
+      notices.bare_item_name("gained mesos (+3)") is None)
 check("ignore lost items",
       notices.parse_line("You have lost items (10 Screw)") is None)
 check("ignore blank", notices.parse_line("  ") is None)
@@ -65,7 +77,7 @@ check("match exact loot name", notices.sell_value("Pig's Head", loot) == 7)
 check("fuzzy match OCR name", notices.sell_value("Pigs Head", loot) == 7)
 check("unpriced returns None", notices.sell_value("Mystery Scroll", loot) is None)
 check("load_loot_prices reads assets",
-      notices.load_loot_prices(m.ASSETS / "loot_prices.json").get("Snail Shell") == 1)
+      notices.load_loot_prices(m.ASSETS / "loot_prices.json").get("Pig's Ribbon") == 10)
 
 # ---- NoticeTracker rates
 prices = {**loot, **potion_sell}
@@ -83,20 +95,26 @@ check("new meso adds; unpriced item is listed",
       t.mesos_gained == 1500 and t.gained == 1525 and "Unknown Ore" in t.unpriced)
 t.observe_lines(["You have gained experience (+99)"], now=13, elapsed=3, running=True)
 check("EXP notice adds nothing", t.gained == 1525)
+t.observe_lines(["Pig's Head", "You have gained an item in the Etc tab (Leaf)"],
+                now=14, elapsed=4, running=True)
+check("bare name and Etc-tab item add loot",
+      t.items.get("Pig's Head") == 1 and t.items.get("Leaf") == 1
+      and t.loot_gained == 25 + 7 + 11)
+total = 1500 + 25 + 7 + 11
 # rates need 30 s of elapsed since start
 check("per_hour is None before 30 s", t.per_hour(20) is None)
 t.read_elapsed = 60
 t.start = 0
-check("per_hour after a minute", abs(t.per_hour(60) - 1525 / 60 * 3600) < 1)
+check("per_hour after a minute", abs(t.per_hour(60) - total / 60 * 3600) < 1)
 look = t.look()
-check("look hands gained and seen_at", look == (1525, 13))
+check("look hands gained and seen_at", look == (total, 14))
 check("value stays None (no inventory balance)", t.value is None)
 
 t.pause()
 t.observe_lines(["You have gained mesos (+999)"], now=20, elapsed=70, running=False)
-check("paused looks don't earn", t.gained == 1525)
+check("paused looks don't earn", t.gained == total)
 t.observe_lines(["You have gained mesos (+999)"], now=21, elapsed=71, running=True)
-check("line still visible after pause isn't recounted", t.gained == 1525)
+check("line still visible after pause isn't recounted", t.gained == total)
 
 t.reset()
 check("reset clears gained and unpriced", t.gained == 0 and t.unpriced == [] and t.seen_at is None)
