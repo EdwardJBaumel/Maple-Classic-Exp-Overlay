@@ -54,6 +54,7 @@ import digits_v2
 import exp_font
 import healthlog
 import level_ocr
+import notices
 import ocr
 import potions
 import report
@@ -116,6 +117,7 @@ PART_NOTE_SECONDS = 120     # ...and its status note stays this long after its l
 PART_NOTES = {              # what the status line says while a part of the reading fails
     "map name": "Map names can't be read right now",
     "mesos": "Mesos can't be read right now",
+    "notices": "Gain notices can't be read right now",
     "potions": "The potion bar can't be read right now",
     "window scan": "The party list and shop windows can't be checked right now",
     "class": "The class can't be read right now",
@@ -131,9 +133,12 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "check_updates": True, "skip_version": "", "ui_scale": 100, "compact": False, "hotkeys_on": True,
             "details": False, "compact_shape": "square", "seen_version": "",
             "potions_on": True, "potion_prices": {}, "shadow_reader": True,
-            "read_status": True}                # the EXP/Mesos/Map/Potions readability strip
+            "read_status": True,                # the EXP/Mesos/Map/Potions readability strip
+            "meso_mode": "inventory"}           # "inventory" = mesos box; "notices" = battle/loot lines
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
+MESO_MODES = ("inventory", "notices")
+MESO_MODE_LABELS = {"inventory": "Inventory", "notices": "Gain notices"}
 SHAPE_LABELS = {"square": "Square", "wide": "Wide", "bar": "Bar"}
 SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and Start/Pause.",
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
@@ -303,10 +308,20 @@ def feature_read_status(exp, mesos, map_name, potions, now):
         rows.append(("EXP", "wait", "Looking for the EXP bar."))
     else:
         rows.append(("EXP", "bad", "Can't read the EXP bar clearly."))
-    # Mesos
+    # Mesos (inventory box, or right-side gain notices)
     seen = mesos.get("seen_at")
     age = None if seen is None else now - seen
-    if mesos.get("covered"):
+    if mesos.get("mode") == "notices":
+        if mesos.get("covered"):
+            rows.append(("Mesos", "bad", "This window is covering the gain notices."))
+        elif seen is None:
+            rows.append(("Mesos", "wait", "Waiting for gain notices (meso pickups and drops)."))
+        elif age is not None and age <= MESO_FRESH_SECONDS:
+            rows.append(("Mesos", "ok", f"Notices looked at {fmt_ago(age)}."))
+        else:
+            rows.append(("Mesos", "stale",
+                         f"Last notice look was {fmt_ago(age) or 'a while'} ago."))
+    elif mesos.get("covered"):
         rows.append(("Mesos", "bad", "This window is covering the inventory's mesos."))
     elif mesos.get("value") is None:
         rows.append(("Mesos", "wait", "Open the inventory to start mesos tracking."))
@@ -358,6 +373,8 @@ def load_config():
         cfg["compact_shape"] = "square"
     if cfg["ui_scale"] not in UI_SCALES:
         cfg["ui_scale"] = 100
+    if cfg.get("meso_mode") not in MESO_MODES:
+        cfg["meso_mode"] = "inventory"
     keys = cfg.get("hotkeys") if isinstance(cfg.get("hotkeys"), dict) else {}
     cfg["hotkeys"] = {a: keys[a] if a in keys and (keys[a] == "" or parse_hotkey(keys[a])) else k
                       for a, k in DEFAULT_HOTKEYS.items()}            # "" is a hotkey turned off
@@ -1830,9 +1847,10 @@ def find_party_bars(bgr, gh, hsv=None):
 # --------------------------------------------------------------------------- finding it on screen
 
 Reading = namedtuple("Reading", "where candidates confident text image boxes map note "
-                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms shadow v2_at",
+                                 "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms shadow v2_at "
+                                 "notices",
                      defaults=((), False, "", None, (), None, None, None, None, (), None, None, None, None, False, None,
-                               None, (), None, None, None))
+                               None, (), None, None, None, None))
 # percent_only: the bar shows just "[58.47%]" (candidates are then [(None, pct)]); level: the level read
 # from the status bar's LV badge, with where it came from, as (level, source), or None
 # exp_kind, tries and ms are for health reports (healthlog.py): how the EXP look went (read, tesseract, unclear,
@@ -1840,6 +1858,7 @@ Reading = namedtuple("Reading", "where candidates confident text image boxes map
 # how long the look took in milliseconds
 # shadow and v2_at are for shadow mode (shadow.py): (what happened, v2's milliseconds), and (key, box) when reader v2
 # found the bar in a new place, to remember in the config
+# notices: OCR lines from the right-side battle/loot strip when meso_mode is "notices" (None = not read this look)
 
 
 def _view(img, lay):
@@ -1890,6 +1909,8 @@ class ScreenReader:
         self.mesos_fails = 0
         self.next_mesos_check = 0.0
         self.mesos_covered = False  # this app's window is in the way of the mesos
+        self.notices_covered = False  # ...or of the right-side gain notices
+        self.meso_mode = "inventory"  # "inventory" or "notices" (set from Settings)
         self.capture = ScreenCapture(None)  # where the pictures come from (set at each look)
         self.two_boxes = False      # a storage / trade window shows a second mesos box
         self.window = None          # "shop", "storage" or "trade" while one is open (or just closed)
@@ -1997,7 +2018,7 @@ class ScreenReader:
         self.mesos_provisional = False
         self.saved_mesos_boxes = {}
         self.mesos_fails, self.mesos_count, self.mesos_pending = 0, None, (None, 0)
-        self.mesos_covered, self.party_area, self.next_scan = False, None, 0.0
+        self.mesos_covered, self.notices_covered, self.party_area, self.next_scan = False, False, None, 0.0
         self.two_boxes, self.next_outline = False, 0.0
         self.window, self.window_until, self.window_box = None, 0.0, False
         self.exp_anchor, self.next_job_read = None, 0.0
@@ -2489,9 +2510,16 @@ class ScreenReader:
                             self.party_area = (sx + x0 - int(g), sy + y0 - int(g),
                                                x1 - x0 + int(2 * g), y1 - y0 + int(2 * g))
                 self._part_ok("window scan")
-        mesos, image, boxes = None, None, ()
+        mesos, image, boxes, notice_lines = None, None, (), None
         self.mesos_covered = False
-        if self.mesos_box:
+        self.notices_covered = False
+        if self.meso_mode == "notices":
+            with self._part("notices"):
+                notice_lines = self._read_notices(capture, rect, notes)
+                if notice_lines is not None:
+                    self._part_ok("notices")
+                    self._tried("mesos", True)          # strip was read (empty is still a look)
+        elif self.mesos_box:
             bx, by, bw, bh = self.mesos_box
             # (the digits only need the box and a sliver around it to be seen)
             if self._blocked(wx + bx, wy + by, bw, bh, margin=max(2, int(0.3 * bh))):
@@ -2517,7 +2545,28 @@ class ScreenReader:
                     self._part_ok("potions")
                     self._tried("potions", bool(bar))
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
-                                mesos_at=moved, window=window, bar=bar, note=" ".join(notes) or None)
+                                mesos_at=moved, window=window, bar=bar, notices=notice_lines,
+                                note=" ".join(notes) or None)
+
+    def _read_notices(self, capture, rect, notes):
+        """OCR lines from the right-side battle/loot strip, or None if this look couldn't try."""
+        capture = self.capture = as_capture(capture)
+        wx, wy, ww, wh = rect
+        bx, by, bw, bh = notices.crop_box(ww, wh)
+        if self._blocked(wx + bx, wy + by, bw, bh, margin=4):
+            notes.append("This window is covering the gain notices.")
+            self.notices_covered = True
+            return None
+        if TESS is None:
+            return None
+        shot = capture.grab(wx + bx, wy + by, bw, bh)
+        if not shot:
+            return None
+        try:
+            return notices.read_strip(shot[0], TESS)
+        except ocr.TesseractError as e:
+            self._part_failed("notices", e)
+            return None
 
     def _read_potion_bar(self, capture, rect, notes):
         """The potions and food on the potion bar as a tuple of potions.Slot (empty: none, or it
@@ -3334,6 +3383,7 @@ class Session:
 
     def __init__(self, gap):
         self.exp, self.meso = ExpTracker(), MesoTracker()
+        self.notices = notices.NoticeTracker()
         self.potions = potions.PotionTracker()
         self.gap = gap
         self.on = False             # Start was pressed (and Pause wasn't)
@@ -3352,17 +3402,20 @@ class Session:
         self.exp.pause()
         # (the inventory can bank what was earned only while still on the grinding map)
         self.meso.pause(bank_inventory=self.map is None or self.here is None or self.here == self.map)
+        self.notices.pause()
         self.potions.pause()
 
     def reset(self):
         self.exp.reset()
         self.meso.reset()
+        self.notices.reset()
         self.potions.reset()
         self.on, self.waiting, self.map, self.last_gain = False, None, None, None
 
     def _wait(self, why):
         self.exp.pause(at=self.last_gain)
         self.meso.pause(stale=why != "idle")      # (leaving the map: a shop or a trade may follow)
+        self.notices.pause(stale=why != "idle")
         self.potions.pause()
         self.waiting = why
 
@@ -3386,6 +3439,7 @@ class Session:
             if self.map and self.here and self.here != self.map:
                 t.new_session()             # a different map: its own numbers
                 self.meso.reset()
+                self.notices.reset()
                 self.potions.reset()
                 self.map = self.here
             self.waiting = None
@@ -4314,7 +4368,8 @@ class App:
         self.reader.saved_v2 = dict(self.cfg.get("exp_v2_spots") or {})
         self.reader.shadow.on = self.cfg["shadow_reader"]           # (reader v2 in shadow mode: off with shadow_reader false)
         self.session = Session(self.cfg["gap_seconds"])
-        self.tracker, self.meso = self.session.exp, self.session.meso
+        self.tracker = self.session.exp
+        self.reader.meso_mode = self.cfg.get("meso_mode", "inventory")
         self.party = 1
         self._party_seen = (None, 0)
         self.last_mesos = None
@@ -4354,6 +4409,7 @@ class App:
         self.log_open = False
         self.settings_win = self.prices_win = None
         self._price_table = None
+        self._refresh_notice_prices()
         self.q = queue.Queue()
         self.stop_evt = threading.Event()
         self.last_capture = None
@@ -4938,6 +4994,30 @@ class App:
         tk.Label(gap_step, text="s", bg=BG, fg=DIM, font=th.font("regular", 11)).pack(side="left", padx=(px(6), 0))
         tk.Label(body, text="Pausing also restarts the 5-minute log timer.", **dim).pack(anchor="w", pady=(px(5), 0))
 
+        meso_line = tk.Frame(body, bg=BG)
+        meso_line.pack(fill="x", pady=(px(14), 0))
+        tk.Label(meso_line, text="Mesos / hr from", **text).pack(side="left")
+        meso_box = tk.Frame(meso_line, bg=BG)
+        meso_box.pack(side="right")
+        meso_btns = {}
+
+        def pick_meso_mode(mode):
+            self.cfg["meso_mode"] = mode
+            self.reader.meso_mode = mode
+            if mode == "notices":
+                self._refresh_notice_prices()
+            for k, b in meso_btns.items():
+                b.set(kind="primary" if k == mode else "secondary")
+            save_config(self.cfg)
+        for k in MESO_MODES:
+            meso_btns[k] = Button(meso_box, th, text=MESO_MODE_LABELS[k], width=110, height=34, radius=10, size=12,
+                                  bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "inventory") else "secondary",
+                                  command=lambda k=k: pick_meso_mode(k))
+            meso_btns[k].pack(side="left", padx=(px(6), 0))
+        tk.Label(body, text="Inventory reads the mesos box. Gain notices reads the floating "
+                            "right-side pickup lines (mesos and valued drops) so you can compare.",
+                 wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
+
         self._section(body, "Window")
         transparency = tk.IntVar(value=int(self.cfg["transparency"]))
         line = tk.Frame(body, bg=BG)
@@ -5137,6 +5217,7 @@ class App:
         else:
             return                                          # not a number (yet): leave what's saved
         save_config(self.cfg)
+        self._refresh_notice_prices()
 
     def _reopen_settings(self):
         """After a size change: Settings again, in the same place, drawn for the new size."""
@@ -5696,9 +5777,15 @@ class App:
                 self.session.look_at_bar(r.bar)
             else:
                 self.session.potions.pause()            # (switched on again later: nothing used meanwhile counts)
-        self.meso.set_window(r.window, now)             # mesos moved at these windows aren't earned
-        if r.mesos is not None:
-            self.meso.observe(r.mesos, now, t.elapsed(), t.running)
+        notice_mode = self.cfg.get("meso_mode") == "notices"
+        if notice_mode:
+            if r.notices is not None:
+                self._refresh_notice_prices()
+                self.session.notices.observe_lines(r.notices, now, t.elapsed(), t.running)
+        else:
+            self.session.meso.set_window(r.window, now)     # mesos moved at these windows aren't earned
+            if r.mesos is not None:
+                self.session.meso.observe(r.mesos, now, t.elapsed(), t.running)
         if r.confident:
             self._exp_seen_at = now
         if r.party is not None:                         # believe a new party size once seen twice
@@ -5765,12 +5852,14 @@ class App:
         if self.autolog.settle(now, self.tracker.running, **self.meso.for_log()):
             self.share_runs()                          # a finished run got its mesos (or went without)
         stale = self.meso.stale_note(now, self.tracker.running)       # (always asked, it keeps its own time)
-        left_out = (self.autolog.alert(now, self.tracker.running) or self.meso.ignored_note(now) or stale
+        inv_alert = None if notice_mode else self.autolog.alert(now, self.tracker.running)
+        left_out = (inv_alert or self.meso.ignored_note(now) or stale
                     or self._net(self.tracker.elapsed())[1])
         if left_out:
             status += f"\n{left_out}"
         # Holding a mesos count while the inventory stays closed: say so once it's been a while.
-        if (self.session.on and self.meso.value is not None and self.meso.seen_at is not None
+        if (not notice_mode and self.session.on and self.meso.value is not None
+                and self.meso.seen_at is not None
                 and now - self.meso.seen_at >= MESO_STALE_SECONDS and not self.reader.mesos_covered
                 and r.mesos is None):
             status += "\nOpen the inventory to update mesos (holding the last look)."
@@ -5992,6 +6081,19 @@ class App:
         table = self._potion_table()
         return potions.Prices(table.prices if table else {}, self.cfg["potion_prices"])
 
+    @property
+    def meso(self):
+        """The active mesos tracker: inventory box, or gain notices, from Settings."""
+        return self.session.notices if self.cfg.get("meso_mode") == "notices" else self.session.meso
+
+    def _refresh_notice_prices(self):
+        """Sell values NoticeTracker uses: common etc + half of potion shop prices."""
+        table = self._potion_table()
+        loot = notices.load_loot_prices(ASSETS / "loot_prices.json")
+        potion_sell = notices.potion_sell_prices(table.prices if table else {}, self.cfg.get("potion_prices") or {})
+        aliases = dict(getattr(table, "aliases", {}) or {}) if table else {}
+        self.session.notices.set_prices({**loot, **potion_sell}, aliases)
+
     def _update_display(self):
         t, now = self.tracker, time.monotonic()
         rate, rolling = t.rate(), t.rolling_rate()
@@ -6004,9 +6106,17 @@ class App:
             self._trend.append(rolling)
             self._trend_at = now
         m, el = self.meso, t.elapsed()
+        notice_mode = self.cfg.get("meso_mode") == "notices"
         meso_age = None if m.seen_at is None else now - m.seen_at
         ago = fmt_ago(meso_age)
-        if m.value is None:
+        if notice_mode:
+            if m.seen_at is None:
+                mesos = "move this window" if self.reader.notices_covered else "waiting for notices"
+            else:
+                mesos = f"+{fmt_short(m.gained)}" if m.gained else "0"
+                if ago and meso_age is not None and meso_age > 3:
+                    mesos += f"  · {ago}"
+        elif m.value is None:
             mesos = "move this window" if self.reader.mesos_covered else "open inventory"
         else:
             mesos = fmt_num(m.value) + (f"  (+{fmt_short(m.gained)})" if m.gained > 0 else "")
@@ -6020,7 +6130,8 @@ class App:
                             and self._exp_seen_at is not None and now - self._exp_seen_at < 10),
                  "looking": t.req is None and self.rejected < 5,
                  "covered": self.rejected >= 5 or (self.last_capture and getattr(self.last_capture, "exp_kind", None) == "covered")},
-            mesos={"value": m.value, "seen_at": m.seen_at, "covered": self.reader.mesos_covered},
+            mesos={"mode": self.cfg.get("meso_mode", "inventory"), "value": m.value, "seen_at": m.seen_at,
+                   "covered": self.reader.notices_covered if notice_mode else self.reader.mesos_covered},
             map_name={"name": self.map_name, "hidden": self.map_hidden},
             potions={"on": self.cfg["potions_on"],
                      "ok": bool(self.cfg["potions_on"] and self._potions_seen_at
@@ -6090,11 +6201,15 @@ class App:
             self.session.start(time.monotonic())
             self.reader.request_map()           # read the map name now
             self._set_start("Pause")
-            if self.meso.value is None:
+            if self.cfg.get("meso_mode") == "notices":
+                self.status.set("Started. Watching gain notices for mesos/hr.")
+            elif self.meso.value is None:
                 self.status.set("Started. Open the inventory once so mesos can be tracked.")
         self.autolog.reset_clock()
-        if self.session.on and self.meso.value is None:
+        if self.session.on and self.cfg.get("meso_mode") != "notices" and self.meso.value is None:
             pass                                  # (the Start cue above stays until a reading updates it)
+        elif self.session.on and self.cfg.get("meso_mode") == "notices" and self.meso.seen_at is None:
+            pass                                  # (the Start cue above stays until notices are read)
         elif self.tracker.exp is not None:
             self.status.set(self._status_for(""))   # right away, not at the next read
 

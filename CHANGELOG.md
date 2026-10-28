@@ -2,10 +2,15 @@
 
 ## Unreleased
 
+**Mesos / hr from gain notices (optional)**
+- Settings → Tracking → **Mesos / hr from**: choose **Inventory** (the mesos box, as before) or **Gain notices** (the floating right-side battle/loot lines). Switch anytime to A/B test.
+- In gain-notices mode, mesos/hr counts meso pickups plus the NPC sell value of priced potions/food (about half the shop buy price) and a small set of common etc drops. Unpriced drop names are kept for later. EXP lines are ignored.
+- Start no longer asks you to open the inventory in notices mode; the reading-status strip says when notices are being read.
+
 **Reading status**
 - Optional row of dots under the big number (Settings → "Show reading status"): EXP, Mesos, Map and Potions. Green = readable, yellow = holding the last look, red = can't read. Hover a label for details. Off by turning the switch off.
 - Details → Mesos shows how long ago the inventory was last looked at. After a minute closed, the status line asks you to open it again (while still holding the last rate).
-- Pressing Start with no mesos baseline yet asks you to open the inventory once.
+- Pressing Start with no mesos baseline yet asks you to open the inventory once (inventory mode only).
 
 **Mesos tracking**
 - Remembers the mesos box for each game-window size (not just the last one), and when you resize the game it scales the last EXP and mesos spots so tracking doesn't start from scratch. A scaled guess is only saved after a clean mesos read.
