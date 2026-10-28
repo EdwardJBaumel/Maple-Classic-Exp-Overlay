@@ -389,11 +389,23 @@ class NoticeTracker:
     def for_log(self):
         return dict(mesos=self.look(), window_at=self.window_at, misreads=self.misreads, meso_epoch=self.resets)
 
-    def per_hour(self, elapsed):
+    def _rate(self, amount, elapsed):
         end = self.read_elapsed if self.read_elapsed is not None else elapsed
         if self.start is None or end - self.start < 30:
             return None
-        return self.gained / (end - self.start) * 3600
+        return amount / (end - self.start) * 3600
+
+    def per_hour(self, elapsed):
+        """Total farm value/hr (meso pickups + valued etc)."""
+        return self._rate(self.gained, elapsed)
+
+    def mesos_per_hour(self, elapsed):
+        """Liquid meso pickups only."""
+        return self._rate(self.mesos_gained, elapsed)
+
+    def loot_per_hour(self, elapsed):
+        """NPC sell value of priced drops / hr."""
+        return self._rate(self.loot_gained, elapsed)
 
     def per_5min(self, elapsed):
         if self.start is None:

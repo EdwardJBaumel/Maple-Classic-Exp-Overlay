@@ -109,6 +109,7 @@ WINDOW_GRACE = 4            # seconds a closed window still counts, so its last 
 WINDOW_NAMES = {"shop": "NPC shop", "storage": "Storage", "trade": "Trade"}
 POTION_SECONDS = 3          # how often the potion bar is read (a small picture, no need for more)
 POTION_FULL_LOOK = 15       # every this many reads the bar is looked for over its whole search range again
+NOTICE_SECONDS = 2          # how often the right-side gain notices are OCR'd (etc value + notice mesos)
 OUTLINE_SECONDS = 8         # how often the (costly) search for a see-through mesos box may run
 LEVEL_RECHECK_SECONDS = 30  # a level read from the badge is looked at again this often (it only changes at a level-up)
 V2_SPOTS_MAX = 8            # window sizes whose reader v2 spot is remembered in the config
@@ -1911,6 +1912,7 @@ class ScreenReader:
         self.mesos_covered = False  # this app's window is in the way of the mesos
         self.notices_covered = False  # ...or of the right-side gain notices
         self.notices_look = None      # {"image", "text"} from the last notice strip OCR
+        self.next_notices = 0.0       # earliest time to OCR the notice strip again
         self.meso_mode = "inventory"  # "inventory" or "notices" (set from Settings)
         self.capture = ScreenCapture(None)  # where the pictures come from (set at each look)
         self.two_boxes = False      # a storage / trade window shows a second mesos box
@@ -2020,7 +2022,7 @@ class ScreenReader:
         self.saved_mesos_boxes = {}
         self.mesos_fails, self.mesos_count, self.mesos_pending = 0, None, (None, 0)
         self.mesos_covered, self.notices_covered, self.notices_look = False, False, None
-        self.party_area, self.next_scan = None, 0.0
+        self.next_notices, self.party_area, self.next_scan = 0.0, None, 0.0
         self.two_boxes, self.next_outline = False, 0.0
         self.window, self.window_until, self.window_box = None, 0.0, False
         self.exp_anchor, self.next_job_read = None, 0.0
@@ -2515,13 +2517,16 @@ class ScreenReader:
         mesos, image, boxes, notice_lines = None, None, (), None
         self.mesos_covered = False
         self.notices_covered = False
-        if self.meso_mode == "notices":
+        # Notices are always scanned (for Etc value). Inventory mode also reads the mesos box.
+        if now >= self.next_notices or self.meso_mode == "notices":
             with self._part("notices"):
                 notice_lines = self._read_notices(capture, rect, notes)
+                self.next_notices = time.monotonic() + NOTICE_SECONDS
                 if notice_lines is not None:
                     self._part_ok("notices")
-                    self._tried("mesos", True)          # strip was read (empty is still a look)
-        elif self.mesos_box:
+                    if self.meso_mode == "notices":
+                        self._tried("mesos", True)      # strip was read (empty is still a look)
+        if self.meso_mode == "inventory" and self.mesos_box:
             bx, by, bw, bh = self.mesos_box
             # (the digits only need the box and a sliver around it to be seen)
             if self._blocked(wx + bx, wy + by, bw, bh, margin=max(2, int(0.3 * bh))):
@@ -5786,11 +5791,11 @@ class App:
             else:
                 self.session.potions.pause()            # (switched on again later: nothing used meanwhile counts)
         notice_mode = self.cfg.get("meso_mode") == "notices"
-        if notice_mode:
-            if r.notices is not None:
-                self._refresh_notice_prices()
-                self.session.notices.observe_lines(r.notices, now, t.elapsed(), t.running)
-        else:
+        # Notices always feed Etc value (and notice-mode mesos). Inventory mesos are separate.
+        if r.notices is not None:
+            self._refresh_notice_prices()
+            self.session.notices.observe_lines(r.notices, now, t.elapsed(), t.running)
+        if not notice_mode:
             self.session.meso.set_window(r.window, now)     # mesos moved at these windows aren't earned
             if r.mesos is not None:
                 self.session.meso.observe(r.mesos, now, t.elapsed(), t.running)
@@ -6069,21 +6074,50 @@ class App:
                 log_error("loading the potion table", e)
         return self._price_table
 
+    def _meso_hr(self, el):
+        """Liquid mesos/hr: inventory box, or notice meso pickups only (etc is separate)."""
+        if self.cfg.get("meso_mode") == "notices":
+            return self.session.notices.mesos_per_hour(el)
+        return self.session.meso.per_hour(el)
+
+    def _etc_hr(self, el):
+        """NPC sell value of priced drops / hr, from the gain-notice strip."""
+        return self.session.notices.loot_per_hour(el)
+
+    def _etc_text(self):
+        """Details → Etc value: session loot total, with /hr when it has one."""
+        n = self.session.notices
+        if not n.loot_gained and n.seen_at is None:
+            return "—"
+        if not n.loot_gained:
+            return "0"
+        text = fmt_num(n.loot_gained)
+        rate = n.loot_per_hour(self.tracker.elapsed())
+        if rate is not None:
+            text += f"  ({fmt_num(rate)}/hr)"
+        return text
+
     def _net(self, el):
-        """(Net mesos/hr as text, a note or None): mesos/hr less the potion cost per hour. A dash when
-        potions are off, nothing has run yet, or a potion that was used was priced at 0 by the player."""
+        """(Net mesos/hr as text, a note or None): mesos/hr + etc/hr − potion cost/hr.
+
+        Shown whenever mesos or etc has a rate. Potion cost is only subtracted when potion
+        counting is on; a used potion priced at 0 still asks for a price first.
+        """
         dash = "—"
-        if not self.cfg["potions_on"] or not el:
+        if not el:
             return dash, None
-        prices, used = self._prices(), self.session.potions.used
-        note = prices.note(used)
-        if note:
-            return dash, note
-        gross = self.meso.per_hour(el)
-        if gross is None:
+        meso_hr, etc_hr = self._meso_hr(el), self._etc_hr(el)
+        if meso_hr is None and etc_hr is None:
             return dash, None
-        cost = self.session.potions.cost(prices.mapping())
-        return fmt_num(gross - cost / el * 3600), None
+        gross = (meso_hr or 0) + (etc_hr or 0)
+        cost = 0
+        if self.cfg["potions_on"]:
+            prices, used = self._prices(), self.session.potions.used
+            note = prices.note(used)
+            if note:
+                return dash, note
+            cost = self.session.potions.cost(prices.mapping()) / el * 3600
+        return fmt_num(gross - cost), None
 
     def _prices(self):
         table = self._potion_table()
@@ -6130,12 +6164,11 @@ class App:
         meso_age = None if m.seen_at is None else now - m.seen_at
         ago = fmt_ago(meso_age)
         if notice_mode:
-            if m.seen_at is None:
+            n = self.session.notices
+            if n.seen_at is None:
                 mesos = "move this window" if self.reader.notices_covered else "waiting for notices"
             else:
-                mesos = f"+{fmt_short(m.gained)}" if m.gained else "0"
-                if m.mesos_gained or m.loot_gained:
-                    mesos += f"  (meso {fmt_short(m.mesos_gained)} · loot {fmt_short(m.loot_gained)})"
+                mesos = f"+{fmt_short(n.mesos_gained)}" if n.mesos_gained else "0"
                 if ago and meso_age is not None and meso_age > 3:
                     mesos += f"  · {ago}"
         elif m.value is None:
@@ -6145,7 +6178,9 @@ class App:
             if ago and meso_age is not None and meso_age > 3:
                 mesos += f"  · {ago}"
         state, state_text = self._state()
+        meso_hr = self._meso_hr(el)
         net = self._net(el)[0]
+        show_net = net != "\u2014" and (self.cfg["potions_on"] or self._etc_hr(el) is not None)
         est = lambda text: APPROX + text if t.estimated and text and text != "\u2014" else text     # (worked out from a % alone)
         reads = feature_read_status(
             exp={"ok": bool(t.req is not None and self.rejected < 5
@@ -6166,14 +6201,17 @@ class App:
             spark=list(self._trend), pct=shown[1] if shown else None,
             eta=f"Lv {level + 1} in {eta}" if level and eta else f"Lv {level}" if level else "",
             level=level or None, eta_time=eta or "",
-            mesos=fmt_num(m.per_hour(el)),
-            net=net if self.cfg["potions_on"] and net != "\u2014" else "",
-            tiles={"Last 5 min": approx_num(rolling, t.estimated), "Mesos / hr": fmt_num(m.per_hour(el)),
-                   "Net / hr": net, "Elapsed": fmt_dur(el)},
+            mesos=fmt_num(meso_hr),
+            net=net if show_net else "",
+            tiles={"Last 5 min": approx_num(rolling, t.estimated), "Mesos / hr": fmt_num(meso_hr),
+                   "Net / hr": net if show_net else "—", "Elapsed": fmt_dur(el)},
             details={"% / hr": f"{rate / t.req * 100:.2f}%" if rate and t.req else "\u2014",
                      "Gained": est(f"{fmt_short(t.gained)}{f'  (+{t.levels} lvl)' if t.levels else ''}"),
                      "Current": (APPROX if t.percent_mode else "") + f"{fmt_num(shown[0])} [{shown[1]:.2f}%]" if shown else "\u2014",
-                     "Mesos": mesos, "Mesos / 5 min": fmt_num(m.per_5min(el)),
+                     "Mesos": mesos,
+                     "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
+                                             else self.session.notices.per_5min(el)),
+                     "Etc value": self._etc_text(),
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
                      "Net mesos / hr": net,
