@@ -100,6 +100,7 @@ Click the **log icon** (top left, next to the status pill) to open the log. It's
 - **15-minute runs:** under the log it also counts toward 15 minutes of non-stop farming on one map with the same party size ("15-min run: 7 of 15 min"). A level-up doesn't stop it; a break, a new map or a new party size starts it over. Finished runs are saved separately and, if you said yes, shared with the [best-maps site](#best-maps-for-your-class) (only clean ones, see there).
 - **Greyed-out lines** were changed outside the overlay. Every line the overlay writes is sealed, so a line edited or added by hand is easy to spot, and it won't count toward the best-maps site. Deleting a line, or renaming a map in the overlay, is fine.
 - **Taking a break restarts the 5-minute timer.** A break means no EXP for 15 seconds (you can change this in ⚙). Changing maps or party size restarts it too.
+- **Paused over 10 minutes?** The next time you resume (or EXP starts again after an idle pause), it starts a **new run** with totals from zero, so an AFK break doesn’t glue onto the old session.
 - **Don't want a run logged?** Turn off **Log this run**. It switches back on its own when that run ends.
 - **Solo** means just you. **4ppl** means a party of 4.
 - **?** under Mesos/hr means your inventory wasn't looked at.

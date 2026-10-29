@@ -1384,6 +1384,28 @@ check(f"no EXP for 15 s pauses by itself, without counting the idle time "
 gains(s, 3.5)
 check(f"the next EXP gain carries on (the gain that restarts it isn't counted: {s.exp.gained})",
       s.waiting is None and s.exp.running and s.exp.gained == 1000)
+# a long AFK pause: next resume is a fresh run (totals from zero)
+gained = s.exp.gained
+idle(s, 40)
+check("still idle after another short gap", s.waiting == "idle")
+s.paused_at = clock[0] - m.PAUSE_RESTART_SECONDS - 1
+before = s.exp.gained
+gains(s, 3.5)
+check(f"paused over 10 min: resume starts a new run (was {before}, now {s.exp.gained})",
+      s.waiting is None and s.exp.running and s.exp.gained == 0 and s.fresh_restart is True
+      and s.meso.gained == 0)
+s.fresh_restart = False
+# manual Pause for a long time, then Start: also a new run
+gains(s, 12)
+looks_at(180000)
+s.pause(clock[0])
+s.paused_at = clock[0] - m.PAUSE_RESTART_SECONDS - 5
+clock[0] += 1
+check("should_fresh_run after a long manual pause", s.should_fresh_run(clock[0]))
+s.begin_fresh_run()
+s.start(clock[0])
+check("long manual pause + Start clears totals for a new run",
+      s.exp.gained == 0 and s.exp.running and s.paused_at is None)
 gained = s.exp.gained
 s.map_seen("The Swamp of Despair I")
 check("leaving the map pauses by itself", s.waiting == "map" and not s.exp.running)

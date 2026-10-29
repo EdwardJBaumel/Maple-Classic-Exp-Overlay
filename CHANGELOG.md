@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+**Long pause → new run**
+- If tracking stays paused (idle gap or you pressed Pause) for **over 10 minutes**, the next resume starts a **new run** — EXP/mesos/etc totals from zero — instead of continuing the old session.
+
 **Mesos / hr from gain notices**
 - Settings → Tracking → **Mesos / hr from**: **Gain notices** (the floating right-side battle/loot lines) is the default; **Inventory** (the mesos box) is still available. Switch anytime to A/B test.
 - Details shows **Party** (Solo / Nppl) from the in-game party list HP bars — same value already stored on each EXP/hr log row.

@@ -3396,7 +3396,8 @@ class Session:
     gain: from zero if that's on a different map, so the numbers are always for the map
     you're on. Time spent paused never counts, and an idle pause rewinds the clock to the
     last EXP gain. The gain that ends a pause starts the clock again rather than counting,
-    just like a log stretch's first gain.
+    just like a log stretch's first gain. Paused longer than PAUSE_RESTART_SECONDS (idle or
+    by hand): the next resume is a fresh run (totals from zero) instead of continuing.
     """
 
     def __init__(self, gap):
@@ -3409,14 +3410,19 @@ class Session:
         self.map = None             # the map these numbers are for
         self.here = None            # the map you're on now
         self.last_gain = None
+        self.paused_at = None       # when the current pause began (manual or by itself)
+        self.fresh_restart = False  # True once after a long-pause fresh run (for the status line)
 
     def start(self, now):
         self.on, self.waiting, self.last_gain = True, None, now
+        self.paused_at = None
         self.map = self.map or self.here
         self.exp.start()
 
-    def pause(self):
+    def pause(self, now=None):
         self.on, self.waiting = False, None
+        if self.paused_at is None:
+            self.paused_at = time.monotonic() if now is None else now
         self.exp.pause()
         # (the inventory can bank what was earned only while still on the grinding map)
         self.meso.pause(bank_inventory=self.map is None or self.here is None or self.here == self.map)
@@ -3429,13 +3435,29 @@ class Session:
         self.notices.reset()
         self.potions.reset()
         self.on, self.waiting, self.map, self.last_gain = False, None, None, None
+        self.paused_at, self.fresh_restart = None, False
 
-    def _wait(self, why):
+    def should_fresh_run(self, now):
+        """Paused (idle or by hand) long enough that the next resume should be a new run."""
+        return self.paused_at is not None and now - self.paused_at >= PAUSE_RESTART_SECONDS
+
+    def begin_fresh_run(self):
+        """Clear farm totals for a new run; keep the current EXP/level reading."""
+        self.exp.new_session()
+        self.meso.reset()
+        self.notices.reset()
+        self.potions.reset()
+        self.map = self.here
+        self.fresh_restart = True
+
+    def _wait(self, why, now=None):
         self.exp.pause(at=self.last_gain)
         self.meso.pause(stale=why != "idle")      # (leaving the map: a shop or a trade may follow)
         self.notices.pause(stale=why != "idle")
         self.potions.pause()
         self.waiting = why
+        if self.paused_at is None:
+            self.paused_at = time.monotonic() if now is None else now
 
     def observe(self, candidates, confident, now):
         """Feeds an EXP reading to the tracker. Returns the tracker's (accepted, note)."""
@@ -3454,13 +3476,11 @@ class Session:
         if t.running and t.gained > gained_before:
             self.last_gain = now
         elif self.on and self.waiting and self.waiting != "blind" and rose:
-            if self.map and self.here and self.here != self.map:
-                t.new_session()             # a different map: its own numbers
-                self.meso.reset()
-                self.notices.reset()
-                self.potions.reset()
-                self.map = self.here
+            # Different map, or paused a long time: totals from zero for a new run.
+            if self.should_fresh_run(now) or (self.map and self.here and self.here != self.map):
+                self.begin_fresh_run()
             self.waiting = None
+            self.paused_at = None
             self.last_gain = now
             t.start()
         return result
@@ -3503,7 +3523,7 @@ class Session:
     def tick(self, now):
         """Call regularly: pauses after `gap` seconds without EXP."""
         if self.on and self.exp.running and now - self.last_gain > self.gap:
-            self._wait("idle")
+            self._wait("idle", now)
 
 
 # --------------------------------------------------------------------------- auto log
@@ -3649,6 +3669,7 @@ NOTE_MARK = "\u270e"            # shown in the log's Note column for lines that 
 BACKUPS_KEPT = 7    # days of log backups kept (backups/ in the data folder)
 RUN_SECONDS = 900   # a run: 15 minutes of non-stop farming on one map, one party size
                     # (until 0.9.4 a run was an hour; those are still shared as they are)
+PAUSE_RESTART_SECONDS = 600  # paused (idle or by hand) this long: next resume is a fresh run
 SITE_GAP = 15       # seconds without EXP that end a run, whatever the gap setting (which is for the log lines)
 END_LOOK = 30       # a run goes to the website with mesos only with an inventory look this soon after its end...
 START_GRACE = 10    # ...and one at or before its start (or this soon after: the first look on a new map)
@@ -6245,7 +6266,11 @@ class App:
             self.level_btn.set(enabled=self._can_type_level())
         waiting = self.session.waiting
         self.session.tick(now)
-        if self.session.waiting != waiting:             # just paused by itself: say why now
+        if self.session.fresh_restart:                  # long AFK pause → new run on resume
+            self.session.fresh_restart = False
+            self.autolog.reset_clock()
+            self.status.set("Paused over 10 min — new run started.")
+        elif self.session.waiting != waiting:           # just paused by itself: say why now
             self._after_pause_check(waiting)
             self.status.set(self._status_for(""))
         self._log_tick(now)
@@ -6273,24 +6298,28 @@ class App:
         self.status.set(self.hotkey_note[0])
 
     def toggle(self):
+        now = time.monotonic()
         if self.session.on:                     # (also while it's paused by itself)
             self.recent.add("You paused")
-            self.session.pause()
+            self.session.pause(now)
             self._set_start("Resume")
-        else:
-            self.recent.add("You pressed Start")
-            self.session.start(time.monotonic())
-            self.reader.request_map()           # read the map name now
-            self._set_start("Pause")
-            if self.cfg.get("meso_mode") == "notices":
-                self.status.set("Started. Watching gain notices for mesos/hr.")
-            elif self.meso.value is None:
-                self.status.set("Started. Open the inventory once so mesos can be tracked.")
+            self.autolog.reset_clock()
+            return
+        fresh = self.session.should_fresh_run(now)
+        if fresh:
+            self.session.begin_fresh_run()
+            self.session.fresh_restart = False
+        self.recent.add("You pressed Start")
+        self.session.start(now)
+        self.reader.request_map()           # read the map name now
+        self._set_start("Pause")
         self.autolog.reset_clock()
-        if self.session.on and self.cfg.get("meso_mode") != "notices" and self.meso.value is None:
-            pass                                  # (the Start cue above stays until a reading updates it)
-        elif self.session.on and self.cfg.get("meso_mode") == "notices" and self.meso.seen_at is None:
-            pass                                  # (the Start cue above stays until notices are read)
+        if fresh:
+            self.status.set("Paused over 10 min — new run started.")
+        elif self.cfg.get("meso_mode") == "notices":
+            self.status.set("Started. Watching gain notices for mesos/hr.")
+        elif self.meso.value is None:
+            self.status.set("Started. Open the inventory once so mesos can be tracked.")
         elif self.tracker.exp is not None:
             self.status.set(self._status_for(""))   # right away, not at the next read
 
