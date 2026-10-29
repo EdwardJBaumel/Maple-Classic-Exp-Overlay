@@ -135,7 +135,7 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "details": False, "compact_shape": "square", "seen_version": "",
             "potions_on": True, "potion_prices": {}, "shadow_reader": True,
             "read_status": True,                # the EXP/Mesos/Map/Potions readability strip
-            "meso_mode": "inventory"}           # "inventory" = mesos box; "notices" = battle/loot lines
+            "meso_mode": "notices"}             # "notices" = battle/loot lines; "inventory" = mesos box
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
 MESO_MODES = ("inventory", "notices")
@@ -375,7 +375,7 @@ def load_config():
     if cfg["ui_scale"] not in UI_SCALES:
         cfg["ui_scale"] = 100
     if cfg.get("meso_mode") not in MESO_MODES:
-        cfg["meso_mode"] = "inventory"
+        cfg["meso_mode"] = "notices"
     keys = cfg.get("hotkeys") if isinstance(cfg.get("hotkeys"), dict) else {}
     cfg["hotkeys"] = {a: keys[a] if a in keys and (keys[a] == "" or parse_hotkey(keys[a])) else k
                       for a, k in DEFAULT_HOTKEYS.items()}            # "" is a hotkey turned off
@@ -1913,7 +1913,7 @@ class ScreenReader:
         self.notices_covered = False  # ...or of the right-side gain notices
         self.notices_look = None      # {"image", "text"} from the last notice strip OCR
         self.next_notices = 0.0       # earliest time to OCR the notice strip again
-        self.meso_mode = "inventory"  # "inventory" or "notices" (set from Settings)
+        self.meso_mode = "notices"    # "notices" or "inventory" (set from Settings)
         self.capture = ScreenCapture(None)  # where the pictures come from (set at each look)
         self.two_boxes = False      # a storage / trade window shows a second mesos box
         self.window = None          # "shop", "storage" or "trade" while one is open (or just closed)
@@ -4381,7 +4381,7 @@ class App:
         self.reader.shadow.on = self.cfg["shadow_reader"]           # (reader v2 in shadow mode: off with shadow_reader false)
         self.session = Session(self.cfg["gap_seconds"])
         self.tracker = self.session.exp
-        self.reader.meso_mode = self.cfg.get("meso_mode", "inventory")
+        self.reader.meso_mode = self.cfg.get("meso_mode", "notices")
         self.party = 1
         self._party_seen = (None, 0)
         self.last_mesos = None
@@ -5023,7 +5023,7 @@ class App:
             save_config(self.cfg)
         for k in MESO_MODES:
             meso_btns[k] = Button(meso_box, th, text=MESO_MODE_LABELS[k], width=110, height=34, radius=10, size=12,
-                                  bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "inventory") else "secondary",
+                                  bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "notices") else "secondary",
                                   command=lambda k=k: pick_meso_mode(k))
             meso_btns[k].pack(side="left", padx=(px(6), 0))
         tk.Label(body, text="Inventory reads the mesos box. Gain notices OCRs the floating "
@@ -6201,7 +6201,7 @@ class App:
                             and self._exp_seen_at is not None and now - self._exp_seen_at < 10),
                  "looking": t.req is None and self.rejected < 5,
                  "covered": self.rejected >= 5 or (self.last_capture and getattr(self.last_capture, "exp_kind", None) == "covered")},
-            mesos={"mode": self.cfg.get("meso_mode", "inventory"), "value": m.value, "seen_at": m.seen_at,
+            mesos={"mode": self.cfg.get("meso_mode", "notices"), "value": m.value, "seen_at": m.seen_at,
                    "covered": self.reader.notices_covered if notice_mode else self.reader.mesos_covered},
             map_name={"name": self.map_name, "hidden": self.map_hidden},
             potions={"on": self.cfg["potions_on"],
@@ -6222,6 +6222,7 @@ class App:
             details={"% / hr": f"{rate / t.req * 100:.2f}%" if rate and t.req else "\u2014",
                      "Gained": est(f"{fmt_short(t.gained)}{f'  (+{t.levels} lvl)' if t.levels else ''}"),
                      "Current": (APPROX if t.percent_mode else "") + f"{fmt_num(shown[0])} [{shown[1]:.2f}%]" if shown else "\u2014",
+                     "Party": party_label(self.party),
                      "Mesos": mesos,
                      "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
                                              else self.session.notices.per_5min(el)),

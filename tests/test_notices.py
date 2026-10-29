@@ -146,7 +146,7 @@ check("inventory mode still asks to open inventory",
 
 # ---- config default
 cfg = m.load_config()
-check("meso_mode defaults to inventory", cfg.get("meso_mode") == "inventory")
+check("meso_mode defaults to gain notices", cfg.get("meso_mode") == "notices")
 
 print()
 if failures:
