@@ -135,7 +135,8 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "details": False, "compact_shape": "square", "seen_version": "",
             "potions_on": True, "potion_prices": {}, "shadow_reader": True,
             "read_status": True,                # the EXP/Mesos/Map/Potions readability strip
-            "meso_mode": "notices"}             # "notices" = battle/loot lines; "inventory" = mesos box
+            "meso_mode": "notices",             # "notices" = battle/loot lines; "inventory" = mesos box
+            "job_override": ""}                 # typed class when OCR can't read the status bar
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
 MESO_MODES = ("inventory", "notices")
@@ -376,6 +377,11 @@ def load_config():
         cfg["ui_scale"] = 100
     if cfg.get("meso_mode") not in MESO_MODES:
         cfg["meso_mode"] = "notices"
+    job = cfg.get("job_override", "")
+    if not isinstance(job, str):
+        cfg["job_override"] = ""
+    else:
+        cfg["job_override"] = job.strip()[:40]
     keys = cfg.get("hotkeys") if isinstance(cfg.get("hotkeys"), dict) else {}
     cfg["hotkeys"] = {a: keys[a] if a in keys and (keys[a] == "" or parse_hotkey(keys[a])) else k
                       for a, k in DEFAULT_HOTKEYS.items()}            # "" is a hotkey turned off
@@ -1215,20 +1221,21 @@ def read_job(bgr, x0, cy, g, debug=None):
     _, blobs = _blobs(white > 0.3)                    # thin letters: a gentle white check
     # The HP bar: 13-16 EXP digits wide, its left end 31-35 of them before the EXP number
     # (the region starts 64 before it). Not to be mixed up with the panels' light borders.
-    bars = [b for b in blobs if 9 * g <= b.w <= 20 * g and 1.4 * g <= b.h <= 2.8 * g
-            and 24 * g <= b.x <= 39 * g]
+    # Classic World's HP pill can be a bit shorter/narrower vs EXP digits than older clients.
+    bars = [b for b in blobs if 7 * g <= b.w <= 22 * g and 1.0 * g <= b.h <= 3.2 * g
+            and 20 * g <= b.x <= 42 * g]
     if not bars:
         return give_up("can't find the HP bar next to the class name")
     hp = min(bars, key=lambda b: b.x)                 # the HP bar (the MP bar is right of it)
     if debug is not None:
         debug["boxes"].append((hp.x, hp.y, hp.x + hp.w, hp.y + hp.h, "mesos"))
-    label = [b for b in blobs if hp.x - 0.5 * g <= b.x <= hp.x + 3 * g
-             and b.y + b.h <= hp.y + 0.2 * g and 0.6 * g <= b.h <= 1.6 * g]
+    label = [b for b in blobs if hp.x - 0.8 * g <= b.x <= hp.x + 3.5 * g
+             and b.y + b.h <= hp.y + 0.35 * g and 0.5 * g <= b.h <= 1.8 * g]
     if not label:
         return give_up("can't find the HP label")
     top, bottom = min(b.y for b in label), max(b.y + b.h for b in label)
-    row = sorted((b for b in blobs if b.x + b.w <= hp.x - g and b.y >= top - 0.3 * g
-                  and b.y + b.h <= bottom + 0.4 * g and b.h >= 0.3 * g), key=lambda b: b.x)
+    row = sorted((b for b in blobs if b.x + b.w <= hp.x - 0.5 * g and b.y >= top - 0.45 * g
+                  and b.y + b.h <= bottom + 0.55 * g and b.h >= 0.25 * g), key=lambda b: b.x)
     if len(row) < 2:
         return give_up("no class name found left of the HP bar")
     words = [[row[0]]]
@@ -4715,11 +4722,8 @@ class App:
         self.root.geometry("")
 
     def _fit_settings(self):
-        """Keeps the Settings window as big as what's in it. (Moving a window to a screen with
-        different scaling can leave it at a fixed size, which would cut its contents off.)"""
-        w = self.settings_win
-        if w and w.winfo_exists() and (w.winfo_width() < w.winfo_reqwidth() or w.winfo_height() < w.winfo_reqheight()):
-            w.geometry("")
+        """Settings is scrollable and resizable; nothing to force-fit after a DPI change."""
+        return
 
     def _check_screen(self):
         """Resizes the text when the window is moved to a screen with different Windows scaling
@@ -4952,7 +4956,7 @@ class App:
 
     def _log_status_text(self, now):
         where = " · ".join(x for x in (self.map_name or "Map not read yet", f"Lv {self.level or '?'}",
-                                       self.job, party_label(self.party)) if x)
+                                       self._class_name(), party_label(self.party)) if x)
         if self.skip_log:
             return f"{where}\nNot logging this run."
         if not self.session.on:
@@ -4967,7 +4971,7 @@ class App:
         if self.last_logged and now - self.last_logged < 8:
             text += "  (just logged)"
         run = self.autolog.run_progress(now)
-        done = self.autolog.runs_done(self.map_name, self.party, self.job) if self.map_name else 0
+        done = self.autolog.runs_done(self.map_name, self.party, self._class_name()) if self.map_name else 0
         if run is not None or done:
             line = f"{RUN_SECONDS // 60}-min run: {int(run // 60) if run is not None else 0} of {RUN_SECONDS // 60} min"
             text += f"\n{line}" + (f" · {done} done here today" if done else "")
@@ -4997,7 +5001,8 @@ class App:
         w = self.settings_win = tk.Toplevel(self.root)
         w.title("Settings")
         w.configure(bg=BG)
-        w.resizable(False, False)
+        w.resizable(True, True)
+        w.minsize(px(420), px(360))
         w.transient(self.root)
         r = self._window_rect()
         if r:                                    # over the overlay, so on the same screen (and scaling)
@@ -5005,11 +5010,37 @@ class App:
         w.attributes("-topmost", bool(self.cfg["topmost"]))
         for delay in (0, 150, 800):
             w.after(delay, lambda: PLATFORM.style_window(w, INK, TEXT_DIM) if w.winfo_exists() else None)
-        body = tk.Frame(w, bg=BG)
-        body.pack(padx=px(26), pady=px(22))
+        # Scrollable body: tall Settings used to clip Tracking / Gain notices on small screens.
+        holder = tk.Frame(w, bg=BG)
+        holder.pack(fill="both", expand=True)
+        canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, borderwidth=0)
+        bar = tk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _sync_scroll(_=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(win_id, width=max(canvas.winfo_width(), body.winfo_reqwidth()))
+
+        body.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", _sync_scroll)
+
+        def _wheel(e):
+            if w.winfo_exists():
+                canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+        canvas.bind_all("<MouseWheel>", _wheel)
+        w.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget is w else None)
+        body.pack_propagate(True)
+        pad = tk.Frame(body, bg=BG)
+        pad.pack(fill="both", expand=True, padx=px(26), pady=px(22))
+        body = pad
         text = dict(bg=BG, fg=FG, font=th.font("semibold", 12))
         dim = dict(bg=BG, fg=DIM, font=th.font("regular", 11))
         wrap = px(380)
+        w.after(50, lambda: w.geometry(f"{max(w.winfo_reqwidth(), px(460))}x{min(w.winfo_reqheight() + 20, px(720))}"))
 
         self._section(body, "Tracking", first=True)
         gap = tk.StringVar(value=str(self.cfg["gap_seconds"]))
@@ -5053,9 +5084,21 @@ class App:
                                   bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "notices") else "secondary",
                                   command=lambda k=k: pick_meso_mode(k))
             meso_btns[k].pack(side="left", padx=(px(6), 0))
-        tk.Label(body, text="Inventory reads the mesos box. Gain notices OCRs the floating "
-                            "right-side pickup lines (like MapleBuddy): meso gains plus NPC sell "
-                            "value of potions and common etc. Keep Battle Messages on screen.",
+        tk.Label(body, text="Inventory = mesos box. Gain notices = floating right-side pickups "
+                            "(mesos + Etc gain + Potion gain in Details). Keep Battle Messages on screen.",
+                 wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
+
+        self._section(body, "Class")
+        job_line = tk.Frame(body, bg=BG)
+        job_line.pack(fill="x")
+        tk.Label(job_line, text="Your class", **text).pack(side="left")
+        job_var = tk.StringVar(value=self.cfg.get("job_override") or self.job or "")
+        job_entry = tk.Entry(job_line, textvariable=job_var, width=18, bg="#1a1d26", fg=FG,
+                             insertbackground=FG, relief="flat", font=th.font("semibold", 12))
+        job_entry.pack(side="right", ipady=px(6), ipadx=px(8))
+        read_job = self.job or "not read yet"
+        tk.Label(body, text=f"Read from the status bar (left of HP): {read_job}. "
+                            "Type Assassin, Bandit, … here if it keeps missing — used for the log and Details.",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
 
         self._section(body, "Window")
@@ -5161,6 +5204,15 @@ class App:
             self.cfg["check_updates"] = bool(updates.get())
             self.cfg["potions_on"] = bool(potions_on.get())
             self.cfg["read_status"] = bool(read_status.get())
+            typed = job_var.get().strip()
+            if typed:
+                # Snap to a known job name when close enough (OCR typos in the box).
+                score, best = max((SequenceMatcher(None, typed.lower(), j.lower()).ratio(), j) for j in JOBS)
+                self.cfg["job_override"] = best if score >= 0.72 else typed[:40]
+                if score >= 0.72 and job_var.get() != best:
+                    job_var.set(best)
+            else:
+                self.cfg["job_override"] = ""
             if bool(sharing.get()) != bool(self.cfg.get("share_runs")):
                 self.cfg["share_runs"] = bool(sharing.get())
                 self.share_runs()
@@ -5175,7 +5227,7 @@ class App:
                 self.root.after(60, self._reopen_settings)        # (drawn again at the new size)
             save_config(self.cfg)
 
-        for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on, read_status):
+        for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on, read_status, job_var):
             var.trace_add("write", apply)
         self._hotkey_settings(body)
         buttons = tk.Frame(body, bg=BG)
@@ -5430,7 +5482,7 @@ class App:
     # ---- sharing runs
     def open_best_maps(self):
         """The best-maps site, already showing the maps for this level, party size and class."""
-        ask = {k: v for k, v in (("level", self.level), ("party", self.party), ("job", self.job)) if v}
+        ask = {k: v for k, v in (("level", self.level), ("party", self.party), ("job", self._class_name())) if v}
         webbrowser.open(STATS_SITE + ("/?" + urllib.parse.urlencode(ask) if ask else ""))
 
     def _first_run(self):
@@ -6055,7 +6107,7 @@ class App:
         if self.cfg["potions_on"]:
             used = self.session.potions.used
             potions_now = (dict(used), self.session.potions.cost(self._prices().mapping()))
-        entry = self.autolog.tick(now, self.map_name, self.level, self.party, job=self.job, map_read=self.map_read,
+        entry = self.autolog.tick(now, self.map_name, self.level, self.party, job=self._class_name(), map_read=self.map_read,
                                   hidden=self.map_hidden, potions=potions_now,
                                   estimated=self.tracker.estimated and self.tracker.percent_mode, **self.meso.for_log())
         if len(self.autolog.runs) > runs:
@@ -6110,6 +6162,21 @@ class App:
     def _etc_hr(self, el):
         """NPC sell value of priced drops / hr, from the gain-notice strip."""
         return self.session.notices.loot_per_hour(el)
+
+    def _class_name(self):
+        """Class for the log / Details: typed override in Settings, else OCR from the status bar."""
+        typed = (self.cfg.get("job_override") or "").strip()
+        return typed or self.job
+
+    def _class_text(self):
+        """Details → Class."""
+        name = self._class_name()
+        if not name:
+            why = ((self.reader.job_look or {}).get("why") or "").strip()
+            return "—" if not why else f"— ({why.split(':')[0]})"
+        if (self.cfg.get("job_override") or "").strip():
+            return f"{name}  (set)"
+        return name
 
     def _loot_text(self, amount, rate):
         """Details loot line: session total, with /hr when it has one."""
@@ -6249,6 +6316,7 @@ class App:
             details={"% / hr": f"{rate / t.req * 100:.2f}%" if rate and t.req else "\u2014",
                      "Gained": est(f"{fmt_short(t.gained)}{f'  (+{t.levels} lvl)' if t.levels else ''}"),
                      "Current": (APPROX if t.percent_mode else "") + f"{fmt_num(shown[0])} [{shown[1]:.2f}%]" if shown else "\u2014",
+                     "Class": self._class_text(),
                      "Party": party_label(self.party),
                      "Mesos": mesos,
                      "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
@@ -6419,7 +6487,10 @@ class App:
     def _class_line(self):
         """What the class reading shows: (picture or None, boxes, a line saying how it went)."""
         look = self.reader.job_look
-        if self.job:
+        name = self._class_name()
+        if (self.cfg.get("job_override") or "").strip():
+            how = f"Class. Set in Settings: {name}" + (f" (OCR: {self.job})" if self.job else "")
+        elif self.job:
             how = f"Class. Read: {self.job}"
         elif look:
             how = f"Class. Not read: {look.get('why') or 'no clear look yet'}"
@@ -6695,7 +6766,7 @@ class App:
                        "last_error": h.last_error, "average_ms": h.average_ms(), "max_ms": h.max_ms,
                        "last_ms": h.last_ms, "age": None if h.last_at is None else now - h.last_at},
             "rejected": self.rejected, "status": self.status.get().replace("\n", " | "),
-            "last_exp": r.text if r else None, "level": self.level, "job": self.job, "map": self.map_name,
+            "last_exp": r.text if r else None, "level": self.level, "job": self._class_name(), "map": self.map_name,
             "party": party_label(self.party),
             "mesos": fmt_num(self.meso.value) if self.meso.value is not None else None, "tracking": bool(self.session.on),
             "tracker": f"paused: {self.session.waiting or 'no'}, gained {fmt_num(t.gained)} EXP in {fmt_dur(t.elapsed())}",

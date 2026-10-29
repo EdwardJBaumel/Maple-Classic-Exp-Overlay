@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Settings + class**
+- Settings is **resizable and scrollable** (Tracking / Gain notices no longer clipped off the bottom).
+- Details shows **Class**. If OCR misses it, type it under Settings → **Class** (e.g. Assassin) for the log and Details.
+- Class HP-bar finder is a bit looser for Classic World's status bar.
+
 **Long pause → new run**
 - If tracking stays paused (idle gap or you pressed Pause) for **over 10 minutes**, the next resume starts a **new run** — EXP/mesos/etc totals from zero — instead of continuing the old session.
 
