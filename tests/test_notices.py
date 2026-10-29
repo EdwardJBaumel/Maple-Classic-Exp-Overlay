@@ -158,6 +158,19 @@ check("inventory mode still asks to open inventory",
 cfg = m.load_config()
 check("meso_mode defaults to gain notices", cfg.get("meso_mode") == "notices")
 
+# ---- Details etc drops list (unit sell price)
+app_prices = {"Pig's Head": 7, "Leaf": 11, "Red Potion": 25}
+nt = notices.NoticeTracker(app_prices, potion_names={"Red Potion"})
+nt.observe_lines(["Pig's Head", "Pig's Head", "Leaf", "You have gained an item (Red Potion)"],
+                 now=1, elapsed=0, running=True)
+# Build the same string shape App._etc_drops_text uses
+rows = sorted(((c * app_prices[n], n, c, app_prices[n])
+               for n, c in nt.items.items() if n not in nt.potion_names), reverse=True)
+bits = [f"{n}×{c} @{p}" if c > 1 else f"{n} @{p}" for _, n, c, p in rows]
+check("etc drops list shows count and unit sell",
+      bits == ["Pig's Head×2 @7", "Leaf @11"] and nt.etc_gained == 7 + 7 + 11
+      and nt.potion_gained == 25)
+
 print()
 if failures:
     print(f"{failures} failed")

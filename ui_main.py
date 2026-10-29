@@ -815,7 +815,8 @@ class MainView(tk.Frame):
         self.more_btn.grid(row=4, column=0, padx=g.px(SIDE), pady=pad(0, 4))
         self.details_open = details
         self.details = Details(self, theme, ("% / hr", "Gained", "Current", "Class", "Party", "Mesos", "Mesos / 5 min",
-                                             "Etc gain", "Potion gain", "Potion cost", "Net mesos / hr", "Left out"), bg)
+                                             "Etc gain", "Etc drops", "Potion gain", "Potion cost", "Net mesos / hr",
+                                             "Left out"), bg)
         self.details.grid(row=5, column=0, padx=g.px(SIDE), pady=pad(0, 8))
         if not details:
             self.details.grid_remove()

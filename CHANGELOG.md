@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.16-beta
+
+**Etc drops show NPC sell price**
+- Details → **Etc drops** lists each priced etc pickup with count and sell-back (`Charm×3 @24`). Etc gain stays the session total; this is the item-by-item breakdown from MeowDB / loot_prices.
+
 ## 0.9.15-beta
 
 **Mesos / hr: Inventory (old) vs Notices (new)**

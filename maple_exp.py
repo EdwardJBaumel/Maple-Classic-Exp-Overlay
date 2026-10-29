@@ -72,7 +72,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.15-beta"
+VERSION = "0.9.16-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -6205,6 +6205,33 @@ class App:
         n = self.session.notices
         return self._loot_text(n.etc_gained, n.etc_per_hour(self.tracker.elapsed()))
 
+    def _etc_drops_text(self):
+        """Details → Etc drops: each priced etc with count and NPC sell price (mesos each)."""
+        n = self.session.notices
+        rows = []
+        for name, count in n.items.items():
+            if name in n.potion_names or count <= 0:
+                continue
+            price = n.prices.get(name)
+            if type(price) is not int or price < 0:
+                continue
+            rows.append((count * price, name, count, price))
+        if not rows:
+            return "—" if n.seen_at is None else "none yet"
+        rows.sort(reverse=True)
+        parts, used, budget = [], 0, 38
+        for total, name, count, price in rows:
+            short = name if len(name) <= 16 else name[:15] + "…"
+            bit = f"{short}×{count} @{price}" if count > 1 else f"{short} @{price}"
+            add = (3 if parts else 0) + len(bit)
+            if parts and used + add > budget:
+                break
+            parts.append(bit)
+            used += add
+        left = len(rows) - len(parts)
+        text = " · ".join(parts)
+        return text + (f" +{left}" if left else "")
+
     def _potion_loot_text(self):
         """Details → Potion gain: NPC sell of potion/food drops (not what you drank)."""
         n = self.session.notices
@@ -6332,6 +6359,7 @@ class App:
                      "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
                                              else self.session.notices.per_5min(el)),
                      "Etc gain": self._etc_text(),
+                     "Etc drops": self._etc_drops_text(),
                      "Potion gain": self._potion_loot_text(),
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
