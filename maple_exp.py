@@ -6097,28 +6097,30 @@ class App:
         return text
 
     def _etc_text(self):
-        """Details → Etc value: NPC sell of etc drops only."""
+        """Details → Etc gain: NPC sell of etc drops only."""
         n = self.session.notices
         return self._loot_text(n.etc_gained, n.etc_per_hour(self.tracker.elapsed()))
 
     def _potion_loot_text(self):
-        """Details → Potion value: NPC sell of potion/food drops (not what you drank)."""
+        """Details → Potion gain: NPC sell of potion/food drops (not what you drank)."""
         n = self.session.notices
         return self._loot_text(n.potion_gained, n.potion_loot_per_hour(self.tracker.elapsed()))
 
     def _net(self, el):
-        """(Net mesos/hr as text, a note or None): mesos/hr + etc/hr − potion cost/hr.
+        """(Net mesos/hr as text, a note or None).
 
-        Shown whenever mesos or etc has a rate. Potion cost is only subtracted when potion
-        counting is on; a used potion priced at 0 still asks for a price first.
+        Own row: mesos/hr + etc gain/hr + potion gain/hr − potion cost/hr.
+        Etc/Potion gain are listed separately in Details; this combines them.
+        Potion cost is only subtracted when potion counting is on; a used potion
+        priced at 0 still asks for a price first.
         """
         dash = "—"
         if not el:
             return dash, None
-        meso_hr, etc_hr = self._meso_hr(el), self._etc_hr(el)
-        if meso_hr is None and etc_hr is None:
+        meso_hr, loot_hr = self._meso_hr(el), self._etc_hr(el)
+        if meso_hr is None and loot_hr is None:
             return dash, None
-        gross = (meso_hr or 0) + (etc_hr or 0)
+        gross = (meso_hr or 0) + (loot_hr or 0)
         cost = 0
         if self.cfg["potions_on"]:
             prices, used = self._prices(), self.session.potions.used
@@ -6223,8 +6225,8 @@ class App:
                      "Mesos": mesos,
                      "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
                                              else self.session.notices.per_5min(el)),
-                     "Etc value": self._etc_text(),
-                     "Potion value": self._potion_loot_text(),
+                     "Etc gain": self._etc_text(),
+                     "Potion gain": self._potion_loot_text(),
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
                      "Net mesos / hr": net,
