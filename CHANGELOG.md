@@ -5,6 +5,7 @@
 **Mesos / hr from gain notices**
 - Settings → Tracking → **Mesos / hr from**: **Gain notices** (the floating right-side battle/loot lines) is the default; **Inventory** (the mesos box) is still available. Switch anytime to A/B test.
 - Details shows **Party** (Solo / Nppl) from the in-game party list HP bars — same value already stored on each EXP/hr log row.
+- Party size detection accepts Classic World's smaller party HP bars (older size limits treated a real 4-man list as Solo).
 - The right-side notices are always OCR'd for loot value (NPC sell of etc + potions/food). Details adds **Etc gain** and **Potion gain** (drops you picked up) above **Potion cost** (what you drank). **Net mesos / hr** is its own row: mesos/hr + etc gain/hr + potion gain/hr − potion cost. Sell-back prices come from [MeowDB](https://meowdb.com/msclassic/item-db) (`assets/loot_prices.json`, refresh with `tools/sync_loot_prices.py`).
 - Gain-notices mode uses notice meso pickups for mesos/hr; inventory mode still uses the mesos box. Parses MapleBuddy-style lines; unpriced names under Details → Left out. View capture includes the strip. Keep Battle Messages on screen.
 
