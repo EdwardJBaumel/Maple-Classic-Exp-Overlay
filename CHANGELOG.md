@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.9.14-beta
+
+Local / PR build with gain-notices mesos, Etc/Potion gain, Classic party HP bars, long-pause new run, resizable Settings, and class override.
 
 **Settings + class**
 - Settings is **resizable and scrollable** (Tracking / Gain notices no longer clipped off the bottom).
