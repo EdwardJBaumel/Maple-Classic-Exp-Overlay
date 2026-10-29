@@ -4,7 +4,7 @@
 
 **Mesos / hr from gain notices (optional)**
 - Settings → Tracking → **Mesos / hr from**: choose **Inventory** (the mesos box, as before) or **Gain notices** (the floating right-side battle/loot lines). Switch anytime to A/B test.
-- The right-side notices are always OCR'd for **Etc value** (NPC sell of potions/food/common etc). Details shows **Etc value**; **Net mesos / hr** = mesos/hr + etc/hr − potion cost. Etc sell-back prices come from [MeowDB](https://meowdb.com/msclassic/item-db) (`assets/loot_prices.json`, refresh with `tools/sync_loot_prices.py`).
+- The right-side notices are always OCR'd for loot value (NPC sell of etc + potions/food). Details shows **Etc value**, **Potion value** (drops you picked up), and **Potion cost** (what you drank). **Net mesos / hr** = mesos/hr + etc/hr + potion-loot/hr − potion cost. Sell-back prices come from [MeowDB](https://meowdb.com/msclassic/item-db) (`assets/loot_prices.json`, refresh with `tools/sync_loot_prices.py`).
 - Gain-notices mode uses notice meso pickups for mesos/hr; inventory mode still uses the mesos box. Parses MapleBuddy-style lines; unpriced names under Details → Left out. View capture includes the strip. Keep Battle Messages on screen.
 
 **Reading status**

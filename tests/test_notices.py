@@ -81,11 +81,12 @@ check("load_loot_prices reads assets",
 
 # ---- NoticeTracker rates
 prices = {**loot, **potion_sell}
-t = notices.NoticeTracker(prices)
+t = notices.NoticeTracker(prices, potion_names=set(potion_sell))
 t.observe_lines(["You have gained mesos (+1000)", "You have gained an item (Red Potion)"],
                 now=10, elapsed=0, running=True)
 check("first look counts meso and loot sell value",
-      t.mesos_gained == 1000 and t.loot_gained == 25 and t.gained == 1025)
+      t.mesos_gained == 1000 and t.loot_gained == 25 and t.gained == 1025
+      and t.potion_gained == 25 and t.etc_gained == 0)
 t.observe_lines(["You have gained mesos (+1000)", "You have gained an item (Red Potion)"],
                 now=11, elapsed=1, running=True)
 check("same visible lines are not double-counted", t.gained == 1025)
@@ -99,7 +100,11 @@ t.observe_lines(["Pig's Head", "You have gained an item in the Etc tab (Leaf)"],
                 now=14, elapsed=4, running=True)
 check("bare name and Etc-tab item add loot",
       t.items.get("Pig's Head") == 1 and t.items.get("Leaf") == 1
-      and t.loot_gained == 25 + 7 + 11)
+      and t.loot_gained == 25 + 7 + 11
+      and t.etc_gained == 7 + 11 and t.potion_gained == 25)
+_etc, _pots = notices.load_loot_tables(m.ASSETS / "loot_prices.json")
+check("load_loot_tables splits etc and potions",
+      _etc.get("Pig's Ribbon") == 10 and _pots.get("Red Potion") == 5)
 total = 1500 + 25 + 7 + 11
 # rates need 30 s of elapsed since start
 check("per_hour is None before 30 s", t.per_hour(20) is None)

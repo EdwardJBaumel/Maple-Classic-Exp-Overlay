@@ -6,7 +6,8 @@ EXP lines are ignored. A line that stays on screen is counted once; only newly
 appeared lines add to mesos/hr.
 
 Nothing here grabs the screen: read_strip() takes a crop and returns OCR text.
-Pricing uses MeowDB Etc NPC sell-back (assets/loot_prices.json) plus NPC sell ≈ half the potion shop price.
+Pricing uses MeowDB Etc + potion/food NPC sell-back (assets/loot_prices.json),
+with gaps filled by NPC sell ≈ half the potion-bar shop buy price.
 """
 import json
 import re
@@ -180,25 +181,40 @@ def new_lines(prev, current):
     return fresh, now
 
 
-def load_loot_prices(path):
-    """{item name: NPC sell mesos} from assets/loot_prices.json."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-    items = data.get("items", data) if isinstance(data, dict) else {}
+def _price_map(raw):
+    """Normalize a name→price object or [{name, price}, ...] list."""
     out = {}
-    if isinstance(items, dict):
-        for name, price in items.items():
+    if isinstance(raw, dict):
+        for name, price in raw.items():
             if isinstance(name, str) and type(price) is int and price >= 0:
                 out[name] = price
-    elif isinstance(items, list):
-        for row in items:
+    elif isinstance(raw, list):
+        for row in raw:
             if isinstance(row, dict) and isinstance(row.get("name"), str) and type(row.get("price")) is int:
                 out[row["name"]] = row["price"]
     return out
+
+
+def load_loot_tables(path):
+    """(etc items, potions) name→NPC sell mesos from assets/loot_prices.json."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}, {}
+    except Exception:
+        return {}, {}
+    if not isinstance(data, dict):
+        return {}, {}
+    if "items" in data or "potions" in data:
+        return _price_map(data.get("items")), _price_map(data.get("potions"))
+    # Legacy flat name → price map (pre-potions section).
+    return _price_map(data), {}
+
+
+def load_loot_prices(path):
+    """{item name: NPC sell mesos} from assets/loot_prices.json (etc + potions)."""
+    etc, potions = load_loot_tables(path)
+    return {**etc, **potions}
 
 
 def potion_sell_prices(potion_items, custom=None):
@@ -286,9 +302,10 @@ class NoticeTracker:
     so the player can see what still needs a price.
     """
 
-    def __init__(self, prices=None, aliases=None):
+    def __init__(self, prices=None, aliases=None, potion_names=None):
         self.prices = dict(prices or {})
         self.aliases = dict(aliases or {})
+        self.potion_names = set(potion_names or ())
         self.resets = 0
         self.reset()
 
@@ -299,6 +316,8 @@ class NoticeTracker:
         self.gained = 0
         self.mesos_gained = 0
         self.loot_gained = 0
+        self.etc_gained = 0
+        self.potion_gained = 0
         self.samples = deque()
         self.start = None
         self.read_elapsed = None
@@ -334,10 +353,12 @@ class NoticeTracker:
     def ignored_note(self, now):
         return None
 
-    def set_prices(self, prices, aliases=None):
+    def set_prices(self, prices, aliases=None, potion_names=None):
         self.prices = dict(prices or {})
         if aliases is not None:
             self.aliases = dict(aliases)
+        if potion_names is not None:
+            self.potion_names = set(potion_names)
 
     def observe_lines(self, lines, now, elapsed, running):
         """lines: OCR strings currently visible (empty list = strip looked empty)."""
@@ -374,6 +395,10 @@ class NoticeTracker:
                 elif price > 0:
                     self._earn(price, elapsed)
                     self.loot_gained += price
+                    if matched in self.potion_names:
+                        self.potion_gained += price
+                    else:
+                        self.etc_gained += price
                     self.items[matched] += 1
 
     def _earn(self, amount, elapsed):
@@ -404,8 +429,14 @@ class NoticeTracker:
         return self._rate(self.mesos_gained, elapsed)
 
     def loot_per_hour(self, elapsed):
-        """NPC sell value of priced drops / hr."""
+        """NPC sell value of priced drops / hr (etc + potions)."""
         return self._rate(self.loot_gained, elapsed)
+
+    def etc_per_hour(self, elapsed):
+        return self._rate(self.etc_gained, elapsed)
+
+    def potion_loot_per_hour(self, elapsed):
+        return self._rate(self.potion_gained, elapsed)
 
     def per_5min(self, elapsed):
         if self.start is None:

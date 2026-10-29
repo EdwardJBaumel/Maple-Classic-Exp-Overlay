@@ -1,6 +1,7 @@
-"""Refresh assets/loot_prices.json from MeowDB Etc NPC sell-back prices.
+"""Refresh assets/loot_prices.json from MeowDB NPC sell-back prices.
 
-Source: https://meowdb.com/msclassic/api/items?type=Etc
+Etc monster drops + Use potions/food/buffs. Source:
+  https://meowdb.com/msclassic/api/items?type=Etc|Use
 Price field: stats.price (same as npcSellBack.price on item detail pages).
 """
 from __future__ import annotations
@@ -22,14 +23,20 @@ UA = {
     "Accept": "application/json",
 }
 
+# Use subtypes that are drinkable / edible loot (not scrolls, arrows, boxes…).
+USE_SUBTYPES = {"Potion", "Food", "Buff", "Pet Food"}
+
 SPOT_CHECK = (
-    "Evil Eye Tail",
-    "Curse Eye Tail",
-    "Lorang Claw",
-    "Tablecloth",
-    "Charm of the Undead",  # Jr. Wraith / Wraith etc
-    "Jr. Necki Skin",
-    "Pig's Ribbon",
+    ("items", "Evil Eye Tail"),
+    ("items", "Curse Eye Tail"),
+    ("items", "Lorang Claw"),
+    ("items", "Charm of the Undead"),
+    ("potions", "Red Potion"),
+    ("potions", "Orange Potion"),
+    ("potions", "White Potion"),
+    ("potions", "Blue Potion"),
+    ("potions", "Apple"),
+    ("potions", "Warrior Potion"),
 )
 
 
@@ -64,18 +71,17 @@ def parse_price(stats) -> int | None:
     return None
 
 
-def fetch_all_etc(page_size: int = 100) -> list[dict]:
+def fetch_type(item_type: str, page_size: int = 100) -> list[dict]:
     items = []
     page = 1
+    want = item_type.lower()
     while True:
-        q = urllib.parse.urlencode({"type": "Etc", "limit": page_size, "page": page})
+        q = urllib.parse.urlencode({"type": item_type, "limit": page_size, "page": page})
         data = get_json(f"{BASE}?{q}")
-        batch = data.get("items") or []
-        # Keep only rows that are actually Etc (API has miscounted totals before).
-        batch = [it for it in batch if (it.get("type") or "").lower() == "etc"]
+        batch = [it for it in (data.get("items") or []) if (it.get("type") or "").lower() == want]
         items.extend(batch)
         print(
-            f"page {page}: +{len(batch)} (running {len(items)}; "
+            f"{item_type} page {page}: +{len(batch)} (running {len(items)}; "
             f"hasMore={data.get('hasMore')} total={data.get('total')})",
             flush=True,
         )
@@ -88,11 +94,12 @@ def fetch_all_etc(page_size: int = 100) -> list[dict]:
     return items
 
 
-def main():
-    rows = fetch_all_etc()
-    priced = {}
-    skipped = 0
+def priced_map(rows: list[dict], keep=None) -> tuple[dict, int]:
+    priced, skipped = {}, 0
     for row in rows:
+        if keep is not None and not keep(row):
+            skipped += 1
+            continue
         name = row.get("name") or row.get("displayName")
         price = parse_price(row.get("stats"))
         if not isinstance(name, str) or not name.strip():
@@ -102,22 +109,55 @@ def main():
             skipped += 1
             continue
         priced[name.strip()] = price
+    return priced, skipped
 
-    items = {k: priced[k] for k in sorted(priced, key=str.lower)}
+
+def keep_use(row: dict) -> bool:
+    sub = row.get("subtype")
+    if sub in USE_SUBTYPES:
+        return True
+    # untitled consumables (e.g. Supreme Sniper Potion)
+    if not sub:
+        stats = row.get("stats")
+        if isinstance(stats, str):
+            try:
+                stats = json.loads(stats)
+            except Exception:
+                stats = {}
+        if isinstance(stats, dict) and any(
+            k in stats for k in ("hpRecover", "mpRecover", "pad", "mad", "speed", "jump", "acc", "eva")
+        ):
+            return True
+        name = (row.get("name") or "").lower()
+        return any(w in name for w in ("potion", "elixir", "pill", "tonic", "juice", "soup", "tea"))
+    return False
+
+
+def main():
+    etc, etc_skip = priced_map(fetch_type("Etc"))
+    pots, pot_skip = priced_map(fetch_type("Use"), keep=keep_use)
+    items = {k: etc[k] for k in sorted(etc, key=str.lower)}
+    potions = {k: pots[k] for k in sorted(pots, key=str.lower)}
     out = {
         "about": (
-            "NPC sell-back prices (mesos) for Etc / common drops counted into notice-mode etc value. "
-            "Synced from meowdb.com/msclassic (stats.price / npcSellBack). Potions and food use half "
-            "their shop buy price from potion_table.json instead. Unpriced names are listed in the "
-            "tracker, not guessed."
+            "NPC sell-back prices (mesos) for notice-mode loot value. "
+            "items = Etc drops; potions = Use potions/food/buffs. Synced from "
+            "meowdb.com/msclassic (stats.price / npcSellBack). Runtime still fills "
+            "gaps with half the potion-bar shop buy from potion_table.json. "
+            "Unpriced names are listed in the tracker, not guessed."
         ),
         "source": "https://meowdb.com/msclassic/item-db",
         "items": items,
+        "potions": potions,
     }
     OUT.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"wrote {len(items)} priced etc items to {OUT} (skipped {skipped})")
-    for want in SPOT_CHECK:
-        print(f"  {want}: {items.get(want, 'MISSING')}")
+    print(
+        f"wrote {len(items)} etc + {len(potions)} potions to {OUT} "
+        f"(skipped etc={etc_skip} use={pot_skip})"
+    )
+    for section, want in SPOT_CHECK:
+        bag = items if section == "items" else potions
+        print(f"  {want}: {bag.get(want, 'MISSING')}")
 
 
 if __name__ == "__main__":

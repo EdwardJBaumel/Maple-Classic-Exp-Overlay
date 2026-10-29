@@ -6084,18 +6084,27 @@ class App:
         """NPC sell value of priced drops / hr, from the gain-notice strip."""
         return self.session.notices.loot_per_hour(el)
 
-    def _etc_text(self):
-        """Details → Etc value: session loot total, with /hr when it has one."""
+    def _loot_text(self, amount, rate):
+        """Details loot line: session total, with /hr when it has one."""
         n = self.session.notices
-        if not n.loot_gained and n.seen_at is None:
+        if not amount and n.seen_at is None:
             return "—"
-        if not n.loot_gained:
+        if not amount:
             return "0"
-        text = fmt_num(n.loot_gained)
-        rate = n.loot_per_hour(self.tracker.elapsed())
+        text = fmt_num(amount)
         if rate is not None:
             text += f"  ({fmt_num(rate)}/hr)"
         return text
+
+    def _etc_text(self):
+        """Details → Etc value: NPC sell of etc drops only."""
+        n = self.session.notices
+        return self._loot_text(n.etc_gained, n.etc_per_hour(self.tracker.elapsed()))
+
+    def _potion_loot_text(self):
+        """Details → Potion value: NPC sell of potion/food drops (not what you drank)."""
+        n = self.session.notices
+        return self._loot_text(n.potion_gained, n.potion_loot_per_hour(self.tracker.elapsed()))
 
     def _net(self, el):
         """(Net mesos/hr as text, a note or None): mesos/hr + etc/hr − potion cost/hr.
@@ -6129,12 +6138,15 @@ class App:
         return self.session.notices if self.cfg.get("meso_mode") == "notices" else self.session.meso
 
     def _refresh_notice_prices(self):
-        """Sell values NoticeTracker uses: common etc + half of potion shop prices."""
+        """Sell values NoticeTracker uses: MeowDB etc/potions, gaps filled by half shop buy."""
         table = self._potion_table()
-        loot = notices.load_loot_prices(ASSETS / "loot_prices.json")
+        etc, meow_pots = notices.load_loot_tables(ASSETS / "loot_prices.json")
         potion_sell = notices.potion_sell_prices(table.prices if table else {}, self.cfg.get("potion_prices") or {})
+        # MeowDB sell-back wins when present; half shop buy covers bar items MeowDB missed.
+        prices = {**potion_sell, **etc, **meow_pots}
         aliases = dict(getattr(table, "aliases", {}) or {}) if table else {}
-        self.session.notices.set_prices({**loot, **potion_sell}, aliases)
+        potion_names = set(potion_sell) | set(meow_pots)
+        self.session.notices.set_prices(prices, aliases, potion_names=potion_names)
 
     def _left_out_text(self, m, notice_mode):
         """Details → Left out: shop/storage jumps in inventory mode; unpriced drops in notices mode."""
@@ -6212,6 +6224,7 @@ class App:
                      "Mesos / 5 min": fmt_num(self.session.meso.per_5min(el) if not notice_mode
                                              else self.session.notices.per_5min(el)),
                      "Etc value": self._etc_text(),
+                     "Potion value": self._potion_loot_text(),
                      "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
                                      if self.cfg["potions_on"] else "—"),
                      "Net mesos / hr": net,
