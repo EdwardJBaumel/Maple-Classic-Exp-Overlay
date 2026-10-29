@@ -6,7 +6,7 @@ EXP lines are ignored. A line that stays on screen is counted once; only newly
 appeared lines add to mesos/hr.
 
 Nothing here grabs the screen: read_strip() takes a crop and returns OCR text.
-Pricing uses a small etc sell list plus NPC sell ≈ half the potion shop price.
+Pricing uses MeowDB Etc NPC sell-back (assets/loot_prices.json) plus NPC sell ≈ half the potion shop price.
 """
 import json
 import re
