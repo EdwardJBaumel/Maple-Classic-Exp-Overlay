@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.15-beta
+
+**Mesos / hr: Inventory (old) vs Notices (new)**
+- Settings → Tracking → **Mesos / hr from** labels are clearer: **Inventory (old)** reads the mesos box in your open bag; **Notices (new)** OCR's floating right-side meso pickup lines. Etc gain / Potion gain still come from the notice strip in both modes.
+- Notice meso parsing accepts short lines like `Mesos (+14)`, OCR typos (`mesas` / `nesos`), and `obtained` / `earned` wording — liquid mesos were staying at 0 while Etc gain moved because those lines didn't match.
+- If Notices mode sees Etc gain but no liquid mesos for a minute, the status line tells you to switch to Inventory.
+- View capture always shows the last notice-strip OCR (not only in Notices mode).
+
 ## 0.9.14-beta
 
 Local / PR build with gain-notices mesos, Etc/Potion gain, Classic party HP bars, long-pause new run, resizable Settings, and class override.

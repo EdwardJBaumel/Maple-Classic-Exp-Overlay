@@ -72,7 +72,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.14-beta"
+VERSION = "0.9.15-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -140,7 +140,8 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
 MESO_MODES = ("inventory", "notices")
-MESO_MODE_LABELS = {"inventory": "Inventory", "notices": "Gain notices"}
+# Inventory = old mesos-box reader; Notices = OCR of floating pickup lines (new).
+MESO_MODE_LABELS = {"inventory": "Inventory (old)", "notices": "Notices (new)"}
 SHAPE_LABELS = {"square": "Square", "wide": "Wide", "bar": "Bar"}
 SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and Start/Pause.",
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
@@ -5080,12 +5081,15 @@ class App:
                 b.set(kind="primary" if k == mode else "secondary")
             save_config(self.cfg)
         for k in MESO_MODES:
-            meso_btns[k] = Button(meso_box, th, text=MESO_MODE_LABELS[k], width=110, height=34, radius=10, size=12,
+            meso_btns[k] = Button(meso_box, th, text=MESO_MODE_LABELS[k], width=128, height=34, radius=10, size=11,
                                   bg=BG, kind="primary" if k == self.cfg.get("meso_mode", "notices") else "secondary",
                                   command=lambda k=k: pick_meso_mode(k))
             meso_btns[k].pack(side="left", padx=(px(6), 0))
-        tk.Label(body, text="Inventory = mesos box. Gain notices = floating right-side pickups "
-                            "(mesos + Etc gain + Potion gain in Details). Keep Battle Messages on screen.",
+        tk.Label(body, text="How liquid Mesos/hr is found. Inventory (old): the mesos number in your open bag. "
+                            "Notices (new): OCR of floating right-side 'gained mesos (+N)' lines. "
+                            "Etc gain and Potion gain always use the notice strip either way. "
+                            "If Mesos stays 0 while Etc gain moves, switch to Inventory and open I now and then. "
+                            "Keep Battle Messages on screen (not only in chat).",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
 
         self._section(body, "Class")
@@ -5955,6 +5959,12 @@ class App:
                 and now - self.meso.seen_at >= MESO_STALE_SECONDS and not self.reader.mesos_covered
                 and r.mesos is None):
             status += "\nOpen the inventory to update mesos (holding the last look)."
+        # Notices mode: etc/potion lines often stick around; liquid meso lines can be missed.
+        n = self.session.notices
+        if (notice_mode and self.session.on and t.elapsed() >= 60
+                and n.mesos_gained == 0 and (n.loot_gained > 0 or n.items)):
+            status += ("\nEtc gain is moving but liquid mesos aren't — Settings → Mesos / hr from → "
+                       "Inventory (old), then open your bag now and then.")
         self.status.set(status)
         self.recent.add(status)
         self.level = level_for_req(t.req) or self.level
@@ -6789,7 +6799,7 @@ class App:
             read = fmt_num(mr.mesos) if mr.mesos is not None else "nothing (waiting for a clear look)"
             shots.append((mr.mesos_image, mr.mesos_boxes, f"Mesos. Read: {read}"))
         look = getattr(self.reader, "notices_look", None)
-        if look and self.cfg.get("meso_mode") == "notices":
+        if look:
             shots.append((look.get("image"), [],
                           f"Gain notices. Read: {look.get('text') or 'nothing (no bright lines)'}"))
         for kept in list(self.reader.shadow.kept):

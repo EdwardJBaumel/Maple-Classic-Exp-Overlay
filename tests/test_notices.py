@@ -36,6 +36,16 @@ check("parse MapleBuddy-style received mesos",
       notices.parse_line("You have gained Mesos (+14)") == ("meso", 14))
 check("parse loose +N mesos",
       notices.parse_line("+1,250 mesos") == ("meso", 1250))
+check("parse short Mesos (+N) with no verb",
+      notices.parse_line("Mesos (+14)") == ("meso", 14))
+check("parse short mesos +N",
+      notices.parse_line("mesos +320") == ("meso", 320))
+check("parse OCR typo mesas",
+      notices.parse_line("You have gained mesas (+500)") == ("meso", 500))
+check("parse OCR typo nesos",
+      notices.parse_line("You have gained nesos (+99)") == ("meso", 99))
+check("parse obtained mesos",
+      notices.parse_line("mesos obtained (+200)") == ("meso", 200))
 check("parse item a Name",
       notices.parse_line("You have gained a Pig's Head") == ("item", "Pig's Head"))
 check("ignore EXP lines",

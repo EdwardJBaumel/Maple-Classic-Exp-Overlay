@@ -27,12 +27,23 @@ ROLLING_WINDOW = 300
 MATCH_MIN = 0.78                # how close an OCR item name must be to a known price name
 
 # Classic / MapleBuddy-style notice lines (OCR may drop "You have", commas, etc.).
+# "mesos" is matched loosely: OCR often turns it into mesas / nesos / meso5.
+_MESO_WORD = r"[mn][eoc0][sn5][oa0s5][s5]?"
 _MESO = re.compile(
-    r"(?:gained|received)\s+mesos?\s*(?:\(?\s*\+?\s*([\d.,]+)\s*\)?|\s*\+?\s*([\d.,]+))",
+    rf"(?:gained|received|obtained|earned|picked\s*up)\s+{_MESO_WORD}\s*"
+    rf"(?:\(?\s*\+?\s*([\d.,]+)\s*\)?|\s*\+?\s*([\d.,]+))",
+    re.I,
+)
+# "mesos obtained (+200)" — verb after the word
+_MESO_AFTER = re.compile(
+    rf"{_MESO_WORD}\s+(?:gained|received|obtained|earned)\s*"
+    rf"(?:\(?\s*\+?\s*([\d.,]+)\s*\)?|\s*\+?\s*([\d.,]+))",
     re.I,
 )
 # "You have gained mesos (+14)" with OCR gluing the number oddly, or just "+1,234 mesos"
-_MESO_LOOSE = re.compile(r"\+?\s*([\d.,]{1,12})\s*\)?\s*mesos?\b", re.I)
+_MESO_LOOSE = re.compile(rf"\+?\s*([\d.,]{{1,12}})\s*\)?\s*{_MESO_WORD}\b", re.I)
+# Short Classic line with no verb: "Mesos (+14)" / "mesos +320"
+_MESO_SHORT = re.compile(rf"^{_MESO_WORD}\s*[:(]?\s*\+?\s*([\d.,]+)\s*\)?\s*\.?$", re.I)
 _ITEM_PAREN = re.compile(
     r"gained\s+(?:an?\s+)?item\b(?:\s+in\s+the\s+\w+\s+tab)?\s*\(([^)]+)\)",
     re.I,
@@ -57,7 +68,8 @@ def bright_mask(bgr):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
     white = (v >= 170) & (s <= 70)
-    yellow = (v >= 150) & (s >= 40) & (h >= 12) & (h <= 45)
+    # Classic meso lines are a warmer gold than item names; keep hue a little wide.
+    yellow = (v >= 140) & (s >= 35) & (h >= 10) & (h <= 50)
     return white | yellow
 
 
@@ -133,13 +145,19 @@ def parse_line(text):
     text = clean_ocr(text)
     if not text or _LOST.search(text) or _EXP.search(text):
         return None
-    m = _MESO.search(text)
+    for pat in (_MESO, _MESO_AFTER):
+        m = pat.search(text)
+        if m:
+            n = _meso_amount(m.group(1) or m.group(2))
+            if n is not None:
+                return ("meso", n)
+    m = _MESO_SHORT.match(text)
     if m:
-        n = _meso_amount(m.group(1) or m.group(2))
+        n = _meso_amount(m.group(1))
         if n is not None:
             return ("meso", n)
     m = _MESO_LOOSE.search(text)
-    if m and re.search(r"meso", text, re.I):
+    if m and re.search(_MESO_WORD, text, re.I):
         n = _meso_amount(m.group(1))
         if n is not None:
             return ("meso", n)
