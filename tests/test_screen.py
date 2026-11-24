@@ -872,6 +872,7 @@ try:
     def boom(*a, **k):
         raise ValueError("boom")
     r._read_potion_bar, r._read_mesos = boom, boom
+    r.meso_mode = "inventory"          # inventory box path (default is gain notices)
     r.mesos_box, r.next_bar, r.next_scan = (10, 10, 100, 12), 0.0, float("inf")
     clock[0] += 1.5
     got = r.read(fscreen)
@@ -929,7 +930,12 @@ def patch_part(part, r, exc):
     if part == "Tesseract":
         return [(m, "tesseract_candidates", boom)]
     if part == "mesos":
+        r.meso_mode = "inventory"      # _read_mesos only runs in inventory mode
+        r.mesos_box = r.mesos_box or (10, 10, 100, 12)
         return [(r, "_read_mesos", boom)]
+    if part == "notices":
+        r.next_notices = 0.0
+        return [(r, "_read_notices", boom)]
     return [(r, "_read_potion_bar", boom)]
 
 
@@ -939,8 +945,11 @@ def rearm(part, r):
     if part == "map name":
         r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
     if part == "mesos":
+        r.meso_mode = "inventory"
         r.mesos_box = (10, 10, 100, 12)
         r.next_scan = float("inf")
+    if part == "notices":
+        r.next_notices = 0.0
 
 
 def has_exp(part, got):

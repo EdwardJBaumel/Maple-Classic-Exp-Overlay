@@ -72,7 +72,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.16-beta"
+VERSION = "0.9.17-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -1935,6 +1935,8 @@ class ScreenReader:
         self.window_box = False     # the mesos box being read belongs to such a window (not the inventory)
         self.potion_table = self.potion_digits = None    # loaded at the first look at the potion bar
         self.next_bar, self.bar_reads, self.bar_shift = 0.0, 0, (0, 0)
+        self.bar_scale = None       # last scale that found potions (UI size can disagree with window_h)
+        self.potion_look = None     # {"image", "text", "scale"} from the last bar look (View capture)
         self.next_outline = 0.0     # the earliest time to search for a see-through mesos box again
         self.party_area = None      # where the party list was last seen, on screen
         self.next_scan = 0.0
@@ -2241,6 +2243,8 @@ class ScreenReader:
             self.exp_anchor, self.next_job_read = None, 0.0
             self.party_area, self.next_scan = None, 0.0
             self.window, self.window_until, self.window_box = None, 0.0, False
+            self.bar_scale, self.bar_shift, self.bar_reads = None, (0, 0), 0
+            self.next_bar = 0.0
             # Prefer the box remembered for this exact size; otherwise scale the last one so
             # tracking doesn't start over from scratch. A scaled guess is provisional: it is
             # used for reading, but not saved until a clean mesos look confirms it.
@@ -2596,7 +2600,11 @@ class ScreenReader:
 
     def _read_potion_bar(self, capture, rect, notes):
         """The potions and food on the potion bar as a tuple of potions.Slot (empty: none, or it
-        can't be seen), or None when there is nothing to report. Read every few seconds."""
+        can't be seen), or None when there is nothing to report. Read every few seconds.
+
+        Tries a few UI scales when the usual window_h/2880 guess finds nothing — Crit Recovery
+        is a skill (not counted here); cost only comes from consumables on this bar.
+        """
         capture = self.capture = as_capture(capture)
         self.next_bar = time.monotonic() + POTION_SECONDS
         wx, wy, ww, wh = rect
@@ -2608,22 +2616,43 @@ class ScreenReader:
                 self._part_failed("potions", e)
                 self.next_bar = float("inf")                    # without it there's nothing to read
                 return None
-        bx, by, bw, bh = potions.bar_crop_box(ww, wh)
-        if self._blocked(wx + bx, wy + by, bw, bh):
-            notes.append("This window is covering the potion bar.")
-            return ()
-        shot = capture.grab(wx + bx, wy + by, bw, bh)
-        if not shot:
-            return ()
-        img, sx, sy = shot
-        ex, ey, scale = potions.bar_estimate(ww, wh)
         full = self.bar_reads % POTION_FULL_LOOK == 0
-        origin = (ex + wx - sx + (0 if full else self.bar_shift[0]), ey + wy - sy + (0 if full else self.bar_shift[1]))
-        slots, (ox, oy) = potions.read_bar(img, scale, origin, self.potion_table, self.potion_digits,
-                                           search=potions.SEARCH if full else 1)
-        self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
+        # Prefer the last scale that worked; on a full look also try gh-based and nearby scales.
+        scales = ([self.bar_scale] if self.bar_scale and not full
+                  else potions.scales_to_try(wh, self.gh, preferred=self.bar_scale))
+        best_slots, best_meta = (), None
+        for scale in scales:
+            bx, by, bw, bh = potions.bar_crop_box(ww, wh, scale=scale)
+            if self._blocked(wx + bx, wy + by, bw, bh):
+                notes.append("This window is covering the potion bar.")
+                self.potion_look = None
+                return ()
+            shot = capture.grab(wx + bx, wy + by, bw, bh)
+            if not shot:
+                continue
+            img, sx, sy = shot
+            ex, ey, _ = potions.bar_estimate(ww, wh, scale=scale)
+            origin = (ex + wx - sx + (0 if full else self.bar_shift[0]),
+                      ey + wy - sy + (0 if full else self.bar_shift[1]))
+            search = potions.SEARCH if full or not self.bar_scale else 1
+            slots, (ox, oy) = potions.read_bar(img, scale, origin, self.potion_table, self.potion_digits,
+                                               search=search)
+            names = ", ".join(f"{s.name}×{s.count}" if s.count is not None else s.name for s in slots) or "none"
+            self.potion_look = {"image": img.copy(), "text": names, "scale": round(scale, 4)}
+            if slots:
+                self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
+                self.bar_scale = scale
+                self.bar_reads += 1
+                return tuple(slots)
+            if best_meta is None:
+                best_slots, best_meta = tuple(slots), (ox, oy, ex, ey, sx, sy, scale)
+            if not full and self.bar_scale:
+                break                       # stuck to the known scale between full looks
+        if best_meta is not None:
+            ox, oy, ex, ey, sx, sy, scale = best_meta
+            self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
         self.bar_reads += 1
-        return tuple(slots)
+        return best_slots
 
     def _readable(self, img, field):
         """Clear mesos digits at field? (Always yes while the mesos font is still being
@@ -5164,6 +5193,11 @@ class App:
         self._section(body, "Potions")
         potions_on = tk.BooleanVar(value=bool(self.cfg["potions_on"]))
         self._switch(body, "Count potions used and what they cost", potions_on).pack(anchor="w")
+        tk.Label(body, text="Reads the quick-slot bar (bottom right): when a stack count goes down, that use is "
+                            "priced at the NPC shop buy. Critical Recovery is an Assassin skill — it isn't a "
+                            "potion and has no meso cost; it just means you drink less, which shows up once the "
+                            "bar is readable. Details → Potion cost says \"bar unread\" until pots are found.",
+                 wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
         price_line = tk.Frame(body, bg=BG)
         price_line.pack(fill="x", pady=(px(8), 0))
         tk.Label(price_line, text="Your own price for each one", **text).pack(side="left")
@@ -5965,6 +5999,11 @@ class App:
                 and n.mesos_gained == 0 and (n.loot_gained > 0 or n.items)):
             status += ("\nEtc gain is moving but liquid mesos aren't — Settings → Mesos / hr from → "
                        "Inventory (old), then open your bag now and then.")
+        if (self.cfg["potions_on"] and self.session.on and t.elapsed() >= 90
+                and not self.session.potions.used
+                and (self._potions_seen_at is None or now - self._potions_seen_at > 60)):
+            status += ("\nPotion bar isn't being read — put HP/MP pots on the quick-slot bar "
+                       "(bottom right) with counts showing. Critical Recovery is a skill, not a potion.")
         self.status.set(status)
         self.recent.add(status)
         self.level = level_for_req(t.req) or self.level
@@ -6237,6 +6276,18 @@ class App:
         n = self.session.notices
         return self._loot_text(n.potion_gained, n.potion_loot_per_hour(self.tracker.elapsed()))
 
+    def _potion_cost_text(self):
+        """Details → Potion cost: NPC buy of what you drank from the quick-slot bar."""
+        if not self.cfg["potions_on"]:
+            return "—"
+        used = self.session.potions.used
+        cost = self.session.potions.cost(self._prices().mapping())
+        if used:
+            return fmt_num(cost)
+        if self._potions_seen_at is None:
+            return "bar unread"
+        return "0"
+
     def _net(self, el):
         """(Net mesos/hr as text, a note or None).
 
@@ -6361,8 +6412,7 @@ class App:
                      "Etc gain": self._etc_text(),
                      "Etc drops": self._etc_drops_text(),
                      "Potion gain": self._potion_loot_text(),
-                     "Potion cost": (fmt_num(self.session.potions.cost(self._prices().mapping()))
-                                     if self.cfg["potions_on"] else "—"),
+                     "Potion cost": self._potion_cost_text(),
                      "Net mesos / hr": net,
                      "Left out": self._left_out_text(m, notice_mode)},
             state=state, state_text=state_text,
@@ -6830,6 +6880,11 @@ class App:
         if look:
             shots.append((look.get("image"), [],
                           f"Gain notices. Read: {look.get('text') or 'nothing (no bright lines)'}"))
+        plook = getattr(self.reader, "potion_look", None)
+        if plook:
+            shots.append((plook.get("image"), [],
+                          f"Potion bar. Read: {plook.get('text') or 'nothing'}   "
+                          f"(scale {plook.get('scale', '?')})"))
         for kept in list(self.reader.shadow.kept):
             shots.append((kept["image"], kept["boxes"], f"Reader v2 test ({kept['kind']}). Old: {report.answer_text(kept['old'])}"
                                                         f"   v2: {report.answer_text(kept['v2'])}"))

@@ -26,6 +26,9 @@ Slot = namedtuple("Slot", "col row name count")      # count None: the icon is k
 BAR_DX, BAR_DY, BAR_W, BAR_H = 930, 730, 600, 490
 SLOT_X, SLOT_Y, SLOT_W, SLOT_H = (32, 163, 294, 425), (84, 212, 340), 122, 116
 SEARCH = 3                  # slots must sit within a pixel or two: tried this far around the estimate
+# When the game's UI scale doesn't match window height (letterbox, UI Ideal, odd res), try these
+# multipliers on the usual window_h/2880 scale before giving up on the bar.
+SCALE_TRIES = (1.0, 0.92, 1.08, 0.84, 1.16, 0.76, 1.24)
 
 # ---------------------------------------------------------------- icon fingerprints
 N = 40                      # a slot is shrunk to N x N
@@ -255,16 +258,49 @@ def slot_rect(col, row, scale, ox, oy):
             int(round(SLOT_W * scale)), int(round(SLOT_H * scale)))
 
 
-def bar_estimate(window_w, window_h):
-    """(x, y, scale): the bar's estimated top left in the window, and the UI scale."""
-    s = window_h / 2880
+def bar_estimate(window_w, window_h, scale=None):
+    """(x, y, scale): the bar's estimated top left in the window, and the UI scale.
+
+    scale: override (default window_h/2880). Pass a tuned scale when the EXP digit height
+    says the UI is drawn bigger or smaller than the window height alone implies.
+    """
+    s = window_h / 2880 if scale is None else scale
     return window_w / 2 + BAR_DX * s, window_h - BAR_DY * s, s
 
 
-def bar_crop_box(window_w, window_h, margin=8):
+def bar_crop_box(window_w, window_h, margin=8, scale=None):
     """(x, y, w, h) of the part of the window that holds the bar (with a margin all round)."""
-    x, y, s = bar_estimate(window_w, window_h)
-    return int(x) - margin, int(y) - margin, int(BAR_W * s) + 2 * margin, int(BAR_H * s) + 2 * margin
+    x, y, s = bar_estimate(window_w, window_h, scale=scale)
+    # Wider margin when trying alternate scales so a shifted bar still fits the crop.
+    pad = margin if scale is None else max(margin, int(round(24 * s)) + 8)
+    return int(x) - pad, int(y) - pad, int(BAR_W * s) + 2 * pad, int(BAR_H * s) + 2 * pad
+
+
+def scale_from_gh(window_h, gh):
+    """UI scale from EXP digit height, or None when gh isn't usable.
+
+    The bar was measured assuming scale = window_h/2880. When the game draws the UI at a
+    different size (common on odd resolutions), gh / expected_gh corrects it. At 1440p a
+    matching UI has gh ≈ 14.
+    """
+    if not gh or gh < 4:
+        return None
+    expected = window_h * (14.0 / 1440.0)
+    if expected <= 0:
+        return None
+    return (window_h / 2880.0) * (float(gh) / expected)
+
+
+def scales_to_try(window_h, gh=None, preferred=None):
+    """Scales to try for the potion bar, preferred first, then gh-based, then nearby factors."""
+    base = window_h / 2880.0
+    out = []
+    for s in (preferred, scale_from_gh(window_h, gh), *(base * m for m in SCALE_TRIES)):
+        if s is None or s < 0.12 or s > 1.6:
+            continue
+        if not any(abs(s - x) < 0.015 for x in out):
+            out.append(s)
+    return out or [base]
 
 
 def _crop(img, rect):

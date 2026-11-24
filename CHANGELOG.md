@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.17-beta
+
+**Potion cost reading fixed / clarified**
+- Potion bar finder tries several UI scales (and uses EXP digit height) when the usual window-size guess finds no pots — recent runs had Potion cost stuck at 0 / net = mesos because the bar wasn't identified (especially on odd resolutions like 1366×768).
+- Details → **Potion cost** shows `bar unread` until the quick-slot bar is found (not a silent 0). Status tips if tracking runs without a readable bar.
+- View capture includes the last potion-bar crop. **Critical Recovery** is an Assassin skill (HP/MP on crit), not a potion — it has no shop price; lower potion use from it shows up automatically once the bar is counted.
+
 ## 0.9.16-beta
 
 **Etc drops show NPC sell price**
