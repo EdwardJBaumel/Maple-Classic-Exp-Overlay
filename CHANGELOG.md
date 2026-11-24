@@ -2,6 +2,12 @@
 
 ## 0.9.18-beta
 
+**Show what it's reading**
+- … menu → **Show reading**, or Settings → **Show what it's reading**: a small live window of the crops the overlay just looked at (EXP, mesos, HP/MP, potion bar, map, class), with coloured digit boxes and a tinted frame per reader. Same pictures as View capture, kept open and refreshed while you play.
+
+**Empty potion bar ≠ unread**
+- An empty but visible quick-slot bar counts as found. Details shows `0 (nothing on bar)` instead of `bar unread`, and the status tip says to drag pots onto the bar.
+
 **HP/MP + Critical Recovery (feature flag)**
 - Reads status-bar **HP/MP** as `[current/max]` (same digit font as EXP). Settings → Potions → **Read HP/MP and spot Critical Recovery heals** (on by default; turn off to keep the reader light).
 - When HP or MP jumps up **without** a quick-slot potion use, that counts as a **skill heal** (Critical Recovery) — not charged. Potion **cost** still comes only from the quick-slot bar.

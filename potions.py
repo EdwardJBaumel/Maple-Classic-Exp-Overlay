@@ -29,6 +29,9 @@ SEARCH = 3                  # slots must sit within a pixel or two: tried this f
 # When the game's UI scale doesn't match window height (letterbox, UI Ideal, odd res), try these
 # multipliers on the usual window_h/2880 scale before giving up on the bar.
 SCALE_TRIES = (1.0, 0.92, 1.08, 0.84, 1.16, 0.76, 1.24)
+# Empty quick-slot cells still have the light item-slot chrome. This many of them means the bar
+# itself was found even when no potion/food is on it (a 2-row keyboard bar has 8 empty cells).
+BAR_FOUND_MIN = 4
 
 # ---------------------------------------------------------------- icon fingerprints
 N = 40                      # a slot is shrunk to N x N
@@ -311,25 +314,36 @@ def _crop(img, rect):
 
 
 def _fit(img, scale, ox, oy, table):
-    """How well the slots at this position look like items: lower is better."""
+    """How well the slots at this position look like items: lower is better.
+
+    Empty item-slot chrome scores low (the bar is here, just unused). Non-slots and missing
+    crops score high so the search settles on the quick-slot grid even when nothing is on it."""
     total = 0.0
     for row in range(3):
         for col in range(4):
             crop = _crop(img, slot_rect(col, row, scale, ox, oy))
-            vec = None if crop is None else fingerprint(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-            total += 1.0 if vec is None else min(1.0, float(table.distances(vec).min()))
+            if crop is None:
+                total += 1.0
+                continue
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            if not is_item_slot(rgb):
+                total += 1.0
+                continue
+            vec = fingerprint(rgb)
+            total += 0.15 if vec is None else min(1.0, float(table.distances(vec).min()))
     return total
 
 
 def read_bar(img, scale, origin, table, digits, search=SEARCH):
-    """What is on the bar: ([Slot, ...], (ox, oy)) for a picture of the window's lower right.
+    """What is on the bar: ([Slot, ...], (ox, oy), item_cells) for a picture of the window's lower right.
 
     origin is where the bar's top left is estimated to be in img; the position is refined by
     trying a few pixels each way (and the refined one is returned, to start from next time).
     Only potions and food are returned: skills, empty slots and other items (throwing stars,
-    scrolls, pet food) are left out."""
+    scrolls, pet food) are left out. item_cells is how many light item-slot cells sit on the
+    grid (empty or filled) — enough of them means the bar chrome is here even with no pots."""
     if not len(table.items):
-        return [], origin
+        return [], origin, 0
     ex, ey = origin
     best = None
     for dx in range(-search, search + 1):
@@ -338,16 +352,20 @@ def read_bar(img, scale, origin, table, digits, search=SEARCH):
             if best is None or score < best[0]:
                 best = (score, ex + dx, ey + dy)
     _, ox, oy = best
-    slots = []
+    slots, item_cells = [], 0
     for row in range(3):
         for col in range(4):
             crop = _crop(img, slot_rect(col, row, scale, ox, oy))
             if crop is None:
                 continue
-            found = table.identify(fingerprint(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            if not is_item_slot(rgb):
+                continue
+            item_cells += 1
+            found = table.identify(fingerprint(rgb))
             if found and found[1] == "consumable":
                 slots.append(Slot(col, row, table.aliases.get(found[0], found[0]), read_count(crop, digits)))
-    return slots, (ox, oy)
+    return slots, (ox, oy), item_cells
 
 
 # ---------------------------------------------------------------- potions used

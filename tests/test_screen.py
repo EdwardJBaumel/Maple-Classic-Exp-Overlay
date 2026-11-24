@@ -318,28 +318,30 @@ WANT = {(0, 0): ("Orange", 5), (1, 0): ("Red Potion", 18), (2, 0): ("Blue Potion
 for height in (1080, 1200, 1440):
     for offset in ((0, 0), (2, -2), (-2, 1)):
         img, origin, scale = make_bar(LAYOUT, height, offset)
-        slots, _ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
+        slots, *_ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
         got = {(sl.col, sl.row): (sl.name, sl.count) for sl in slots}
         check(f"the potion bar is read right at {height} p, bar {offset} px off: potions and counts, skills and "
               f"other items left out ({len(got)} slots)", got == WANT)
 
 img, origin, scale = make_bar({(1, 1): ("red", 12), (2, 1): ("blue", 3), (1, 2): ("orange", 40)}, 1080, rows=2)
-slots, _ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
+slots, *_ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
 check("a 2-row bar is read: only its two rows", {(s.col, s.row, s.name, s.count) for s in slots} ==
       {(1, 1, "Red Potion", 12), (2, 1, "Blue Potion", 3), (1, 2, "Orange", 40)})
-slots, _ = potions.read_bar(*(lambda a: (a[0], a[2], a[1]))(make_bar({}, 1080)), TABLE, DIGITS)
+slots, _, cells = potions.read_bar(*(lambda a: (a[0], a[2], a[1]))(make_bar({}, 1080)), TABLE, DIGITS)
 check("a bar with nothing on it reads nothing", slots == [])
+check("an empty bar still shows item-slot chrome", cells >= potions.BAR_FOUND_MIN)
 noise = np.random.default_rng(3).integers(0, 255, (199, 241, 3), dtype=np.uint8)
-slots, _ = potions.read_bar(noise, 1080 / 2880, (8, 8), TABLE, DIGITS)
+slots, _, cells = potions.read_bar(noise, 1080 / 2880, (8, 8), TABLE, DIGITS)
 check("a screen with no bar reads nothing", slots == [])
+check("noise has no item-slot chrome", cells < potions.BAR_FOUND_MIN)
 img, origin, scale = make_bar({(0, 0): ("red", None), (1, 0): ("blue", None)}, 1080)
-slots, _ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
+slots, *_ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
 check("a known icon with no number is kept with no count (never a made-up one)",
       {(s.col, s.row, s.name, s.count) for s in slots} == {(0, 0, "Red Potion", None), (1, 0, "Blue Potion", None)})
 wrong = []
 for count in (0, 1, 2, 5, 7, 8, 9, 10, 11, 16, 20, 33, 44, 59, 60, 71, 88, 99, 100, 101, 123, 200, 321, 450, 666, 987):
     img, origin, scale = make_bar({(1, 0): ("blue", count)}, 1080)
-    slots, _ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
+    slots, *_ = potions.read_bar(img, scale, origin, TABLE, DIGITS)
     if [(sl.name, sl.count) for sl in slots] != [("Blue Potion", count)]:
         wrong.append(count)
 check(f"counts from 0 to 987 are read back right ({wrong or 'all'})", not wrong)
@@ -361,13 +363,13 @@ for count in (21, 33, 49, 51, 18, 40, 98, 7):
     bar, origin, scale = make_bar({(3, 0): ("red", None)}, 1080)
     x, y, w, h = potions.slot_rect(3, 0, 1080 / 2880, 8, 8)
     draw_count_on_dark(bar[y:y + h, x:x + w], count)
-    slots, _ = potions.read_bar(bar, scale, origin, TABLE, DIGITS)
+    slots, *_ = potions.read_bar(bar, scale, origin, TABLE, DIGITS)
     if [(s.name, s.count) for s in slots] != [("Red Potion", count)]:
         wrong.append((count, [s.count for s in slots]))
 check(f"a count over a dark background (the red potion's bottle) is read right ({wrong or 'all'})", not wrong)
 img, origin, scale = make_bar({(1, 0): ("blue", 37)}, 1080)
 blur = cv2.GaussianBlur(img, (0, 0), 4)
-slots, _ = potions.read_bar(blur, scale, origin, TABLE, DIGITS)
+slots, *_ = potions.read_bar(blur, scale, origin, TABLE, DIGITS)
 check("a smeared bar gives no wrong number", all(sl.count in (None, 37) for sl in slots))
 
 # ---- the reader looks at the potion bar every few seconds, and says so when this window is in the way
@@ -936,12 +938,15 @@ def patch_part(part, r, exc):
     if part == "notices":
         r.next_notices = 0.0
         return [(r, "_read_notices", boom)]
+    if part == "vitals":
+        r.vitals_on, r.next_vitals = True, 0.0
+        return [(r, "_read_vitals", boom)]
     return [(r, "_read_potion_bar", boom)]
 
 
 def rearm(part, r):
     """Makes the part due again (its own timers would otherwise skip it)."""
-    r.next_job_read = r.next_name_read = r.next_level_read = r.next_scan = r.next_bar = 0.0
+    r.next_job_read = r.next_name_read = r.next_level_read = r.next_scan = r.next_bar = r.next_vitals = 0.0
     if part == "map name":
         r.map_unread, r.next_map_read, r.map_print = True, 0.0, None
     if part == "mesos":
@@ -950,6 +955,8 @@ def rearm(part, r):
         r.next_scan = float("inf")
     if part == "notices":
         r.next_notices = 0.0
+    if part == "vitals":
+        r.vitals_on, r.next_vitals = True, 0.0
 
 
 def has_exp(part, got):

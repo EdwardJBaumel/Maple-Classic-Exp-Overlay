@@ -137,9 +137,11 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "details": False, "compact_shape": "square", "seen_version": "",
             "potions_on": True, "potion_prices": {}, "shadow_reader": True,
             "read_status": True,                # the EXP/Mesos/Map/Potions readability strip
+            "show_reading": False,              # live window of the crops + digit boxes the reader sees
             "meso_mode": "notices",             # "notices" = battle/loot lines; "inventory" = mesos box
             "vitals_on": True,                  # read HP/MP [cur/max]; Crit Recovery vs potion heals
             "job_override": ""}                 # typed class when OCR can't read the status bar
+READING_REFRESH_SECONDS = 0.6   # live Show-reading window: don't rebuild more often than this
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
 MESO_MODES = ("inventory", "notices")
@@ -150,7 +152,15 @@ SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and St
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
                 "bar": "One thin strip with the main numbers and a slim level bar."}
 # What's new, shown once after updating to a version (plain words, newest changes only). A version with no entry shows nothing.
-WHATS_NEW = {"0.9.13-beta": (
+WHATS_NEW = {"0.9.18-beta": (
+    (None, None, (
+        ("head", "See what it's reading"),
+        "… → Show reading (or Settings) opens a live window of the crops: EXP, mesos, HP/MP, potion bar, "
+        "map and class, with coloured boxes on the digits. Same as View capture, kept open while you play.",
+        ("head", "Empty potion bar"),
+        "If the quick-slot bar is visible but empty, Details says 0 (nothing on bar) instead of bar unread. "
+        "Drag HP/MP pots there so potion cost can count.")),),
+    "0.9.13-beta": (
     (None, None, (
         ("head", "Fewer reading problems"),
         "Reading keeps going when the map name or class can't be read, and a stuck text reader no longer freezes the display.",
@@ -1939,7 +1949,8 @@ class ScreenReader:
         self.window_box = False     # the mesos box being read belongs to such a window (not the inventory)
         self.potion_table = self.potion_digits = None    # loaded at the first look at the potion bar
         self.next_bar, self.bar_reads, self.bar_shift = 0.0, 0, (0, 0)
-        self.bar_scale = None       # last scale that found potions (UI size can disagree with window_h)
+        self.bar_scale = None       # last scale that found the quick-slot bar (pots or empty chrome)
+        self.bar_ok = False         # last potion look found the bar (even if every slot is empty)
         self.potion_look = None     # {"image", "text", "scale"} from the last bar look (View capture)
         self.vitals_on = True       # read HP/MP [cur/max] (set from Settings)
         self.vitals_look = None     # {"image", "text"} last vitals crop
@@ -2250,7 +2261,7 @@ class ScreenReader:
             self.exp_anchor, self.next_job_read = None, 0.0
             self.party_area, self.next_scan = None, 0.0
             self.window, self.window_until, self.window_box = None, 0.0, False
-            self.bar_scale, self.bar_shift, self.bar_reads = None, (0, 0), 0
+            self.bar_scale, self.bar_shift, self.bar_reads, self.bar_ok = None, (0, 0), 0, False
             self.next_bar = 0.0
             # Prefer the box remembered for this exact size; otherwise scale the last one so
             # tracking doesn't start over from scratch. A scaled guess is provisional: it is
@@ -2575,7 +2586,7 @@ class ScreenReader:
                 bar = self._read_potion_bar(capture, rect, notes)
                 if bar is not None:
                     self._part_ok("potions")
-                    self._tried("potions", bool(bar))
+                    self._tried("potions", self.bar_ok or bool(bar))
         if self.vitals_on and self.box and self.gh and now >= self.next_vitals:
             with self._part("vitals"):
                 got_vitals = self._read_vitals(capture, rect, notes)
@@ -2641,14 +2652,17 @@ class ScreenReader:
         return got
 
     def _read_potion_bar(self, capture, rect, notes):
-        """The potions and food on the potion bar as a tuple of potions.Slot (empty: none, or it
-        can't be seen), or None when there is nothing to report. Read every few seconds.
+        """The potions and food on the potion bar as a tuple of potions.Slot (empty: none on the
+        bar, or it can't be seen), or None when there is nothing to report. Read every few seconds.
 
         Tries a few UI scales when the usual window_h/2880 guess finds nothing — Crit Recovery
-        is a skill (not counted here); cost only comes from consumables on this bar.
+        is a skill (not counted here); cost only comes from consumables on this bar. An empty
+        but visible quick-slot bar still counts as found (self.bar_ok), so Details doesn't say
+        "bar unread" when the slots are just unused.
         """
         capture = self.capture = as_capture(capture)
         self.next_bar = time.monotonic() + POTION_SECONDS
+        self.bar_ok = False
         wx, wy, ww, wh = rect
         if self.potion_table is None:
             try:
@@ -2662,7 +2676,9 @@ class ScreenReader:
         # Prefer the last scale that worked; on a full look also try gh-based and nearby scales.
         scales = ([self.bar_scale] if self.bar_scale and not full
                   else potions.scales_to_try(wh, self.gh, preferred=self.bar_scale))
-        best_slots, best_meta = (), None
+        # Prefer a scale that sees consumables; only fall back to "empty bar chrome" so a wrong
+        # scale's light pixels don't lock before the real pots are tried.
+        best_empty, best_miss = None, None          # (item_cells, slots, ox,oy,ex,ey,sx,sy,scale)
         for scale in scales:
             bx, by, bw, bh = potions.bar_crop_box(ww, wh, scale=scale)
             if self._blocked(wx + bx, wy + by, bw, bh):
@@ -2677,24 +2693,34 @@ class ScreenReader:
             origin = (ex + wx - sx + (0 if full else self.bar_shift[0]),
                       ey + wy - sy + (0 if full else self.bar_shift[1]))
             search = potions.SEARCH if full or not self.bar_scale else 1
-            slots, (ox, oy) = potions.read_bar(img, scale, origin, self.potion_table, self.potion_digits,
-                                               search=search)
+            slots, (ox, oy), item_n = potions.read_bar(img, scale, origin, self.potion_table,
+                                                       self.potion_digits, search=search)
             names = ", ".join(f"{s.name}×{s.count}" if s.count is not None else s.name for s in slots) or "none"
             self.potion_look = {"image": img.copy(), "text": names, "scale": round(scale, 4)}
+            meta = (ox, oy, ex, ey, sx, sy, scale)
             if slots:
                 self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
                 self.bar_scale = scale
                 self.bar_reads += 1
+                self.bar_ok = True
                 return tuple(slots)
-            if best_meta is None:
-                best_slots, best_meta = tuple(slots), (ox, oy, ex, ey, sx, sy, scale)
+            if item_n >= potions.BAR_FOUND_MIN and (best_empty is None or item_n > best_empty[0]):
+                best_empty = (item_n, tuple(slots)) + meta
+            elif best_miss is None:
+                best_miss = (item_n, tuple(slots)) + meta
             if not full and self.bar_scale:
                 break                       # stuck to the known scale between full looks
-        if best_meta is not None:
-            ox, oy, ex, ey, sx, sy, scale = best_meta
+        pick = best_empty or best_miss
+        if pick is not None:
+            _, slots, ox, oy, ex, ey, sx, sy, scale = pick
             self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
+            if best_empty is not None:
+                self.bar_scale = scale
+                self.bar_ok = True
+                self.bar_reads += 1
+                return slots
         self.bar_reads += 1
-        return best_slots
+        return ()
 
     def _readable(self, img, field):
         """Clear mesos digits at field? (Always yes while the mesos font is still being
@@ -4539,8 +4565,10 @@ class App:
         self.level_up_at = None
         self.died_at = None
         self.log_open = False
-        self.settings_win = self.prices_win = None
+        self.settings_win = self.prices_win = self.reading_win = None
         self._price_table = None
+        self._reading_at = 0.0              # last rebuild of the Show-reading window
+        self._reading_pending = False
         self._refresh_notice_prices()
         self.q = queue.Queue()
         self.stop_evt = threading.Event()
@@ -4600,6 +4628,8 @@ class App:
         self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._worker_thread.start()
         root.after(200, self._pump)
+        if self.cfg.get("show_reading"):
+            root.after(800, self.open_reading_win)
         root.after(500, self._refresh)
         if self.cfg["check_updates"]:
             self.check_updates()                       # only now, when it starts
@@ -4637,7 +4667,8 @@ class App:
     def _open_menu(self, anchor):
         PopupMenu(self.theme, anchor, [
             ("Follow the game" if self.reader.mode == "region" else "Select area", None, self.toggle_area),
-            ("View capture", None, self.view_capture)])
+            ("View capture", None, self.view_capture),
+            ("Hide reading" if self._reading_open() else "Show reading", None, self.toggle_show_reading)])
 
     def _logging_clicked(self, on):
         if self.skip_log == on:                           # the switch and the state disagree: flip
@@ -5245,6 +5276,13 @@ class App:
         tk.Label(body, text="A row of dots under the big number: green means it can read that part, "
                             "yellow means it's holding the last look, red means it can't.",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
+        show_reading = tk.BooleanVar(value=bool(self.cfg.get("show_reading", False)))
+        self._switch(body, "Show what it's reading (live crops + boxes)", show_reading).pack(
+            anchor="w", pady=(px(10), 0))
+        tk.Label(body, text="A small window that updates as it looks: EXP, mesos, HP/MP, potion bar, "
+                            "map and class, with coloured boxes on the digits. Same pictures as "
+                            "View capture, kept open. Also under … → Show reading.",
+                 wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
 
         self._section(body, "Potions")
         potions_on = tk.BooleanVar(value=bool(self.cfg["potions_on"]))
@@ -5304,6 +5342,13 @@ class App:
             self.cfg["vitals_on"] = bool(vitals_on.get())
             self.reader.vitals_on = self.cfg["vitals_on"]
             self.cfg["read_status"] = bool(read_status.get())
+            want_reading = bool(show_reading.get())
+            if want_reading != bool(self.cfg.get("show_reading")):
+                self.cfg["show_reading"] = want_reading
+                if want_reading:
+                    self.open_reading_win()
+                else:
+                    self.close_reading_win()
             typed = job_var.get().strip()
             if typed:
                 # Snap to a known job name when close enough (OCR typos in the box).
@@ -5328,7 +5373,7 @@ class App:
             save_config(self.cfg)
 
         for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on, vitals_on,
-                    read_status, job_var):
+                    read_status, show_reading, job_var):
             var.trace_add("write", apply)
         self._hotkey_settings(body)
         buttons = tk.Frame(body, bg=BG)
@@ -5965,7 +6010,8 @@ class App:
         potion_delta = {}
         if r.bar is not None:
             self.potion_bar = r.bar
-            if r.bar:
+            # Empty slots still count as a successful look when the bar chrome was found.
+            if r.bar or getattr(self.reader, "bar_ok", False):
                 self._potions_seen_at = now
             if self.cfg["potions_on"]:
                 potion_delta = self.session.look_at_bar(r.bar)
@@ -6065,15 +6111,18 @@ class App:
                 and n.mesos_gained == 0 and (n.loot_gained > 0 or n.items)):
             status += ("\nEtc gain is moving but liquid mesos aren't — Settings → Mesos / hr from → "
                        "Inventory (old), then open your bag now and then.")
-        if (self.cfg["potions_on"] and self.session.on and t.elapsed() >= 90
-                and not self.session.potions.used
-                and (self._potions_seen_at is None or now - self._potions_seen_at > 60)):
-            status += ("\nPotion bar isn't being read — put HP/MP pots on the quick-slot bar "
-                       "(bottom right) with counts showing. Critical Recovery is a skill, not a potion.")
+        if self.cfg["potions_on"] and self.session.on and t.elapsed() >= 90 and not self.session.potions.used:
+            if self._potions_seen_at is None or now - self._potions_seen_at > 60:
+                status += ("\nPotion bar isn't being read — put HP/MP pots on the quick-slot bar "
+                           "(bottom right) with counts showing. Critical Recovery is a skill, not a potion.")
+            elif not self.potion_bar:
+                status += ("\nNo potions on the quick-slot bar — drag HP/MP pots there (bottom right) "
+                           "with counts showing so potion cost can be counted.")
         self.status.set(status)
         self.recent.add(status)
         self.level = level_for_req(t.req) or self.level
         self._log_tick(now)
+        self._schedule_reading_refresh()
 
     def _observe_percent(self, r, now):
         """A bar with only a %: the level comes from the badge (or the level known before, or typed in)."""
@@ -6352,6 +6401,8 @@ class App:
             return fmt_num(cost)
         if self._potions_seen_at is None:
             return "bar unread"
+        if not self.potion_bar:
+            return "0 (nothing on bar)"
         return "0"
 
     def _vitals_text(self):
@@ -6647,21 +6698,38 @@ class App:
                                 "finding it automatically.")
         RegionSelector(self.root, done)
 
+    # Colours for digit boxes and crop frames in View capture / Show reading.
+    _BOX_COLORS = {"exp": "#ffcc33", "pct": "#33ccff", "mesos": "#66dd66",
+                   "hp": "#ff6666", "mp": "#6699ff", "potion": "#dd88ff",
+                   "map": "#88ddaa", "class": "#ffaa66", "notices": "#cccccc"}
+
     @staticmethod
-    def _boxed_image(bgr, boxes):
-        """A screenshot crop, enlarged, with a box drawn around each digit found."""
+    def _boxed_image(bgr, boxes, frame=None):
+        """A screenshot crop, enlarged, with a box drawn around each digit found.
+
+        frame: optional colour for a border around the whole crop (so empty-box looks still
+        show which reader this is — potion bar, HP/MP, map, …)."""
         img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
         scale = min(4.0, max(1.0, 120 / img.height), 900 / img.width)
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
         draw = ImageDraw.Draw(img)
-        colors = {"exp": "#ffcc33", "pct": "#33ccff", "mesos": "#66dd66"}
-        for x0, y0, x1, y1, kind in boxes:
+        colors = App._BOX_COLORS
+        if frame:
+            draw.rectangle([1, 1, img.width - 2, img.height - 2], outline=frame, width=3)
+        for x0, y0, x1, y1, kind in boxes or ():
             draw.rectangle([x0 * scale, y0 * scale, x1 * scale, y1 * scale],
-                           outline=colors[kind], width=2)
+                           outline=colors.get(kind, "#ffffff"), width=2)
         return img
 
-    def _boxed(self, bgr, boxes):
-        return ImageTk.PhotoImage(self._boxed_image(bgr, boxes))
+    def _boxed(self, bgr, boxes, frame=None):
+        return ImageTk.PhotoImage(self._boxed_image(bgr, boxes, frame=frame))
+
+    def _shot_frame(self, text):
+        """Crop-border colour from the View-capture / Show-reading caption line."""
+        key = (text or "").split(".", 1)[0].strip().lower()
+        alias = {"exp bar": "exp", "hp/mp": "hp", "potion bar": "potion", "gain notices": "notices",
+                 "map name": "map", "class": "class", "mesos": "mesos"}
+        return self._BOX_COLORS.get(alias.get(key, key))
 
     def _class_line(self):
         """What the class reading shows: (picture or None, boxes, a line saying how it went)."""
@@ -6691,22 +6759,131 @@ class App:
         for delay in (0, 150, 800):
             win.after(delay, lambda: PLATFORM.style_window(win, INK, TEXT_DIM) if win.winfo_exists() else None)
         th = self.theme
-        shots = self._look_shots()
-        win._imgs = []
-        for shot, boxes, text in shots:
-            if shot is not None and shot.size:
-                win._imgs.append(self._boxed(shot, boxes))
-                tk.Label(win, image=win._imgs[-1], bg=BG).pack(padx=th.px(16), pady=(th.px(16), th.px(4)))
-            else:
-                tk.Frame(win, bg=BG, height=th.px(12)).pack()
-            tk.Label(win, text=text, bg=BG, fg=FG, font=th.font("semibold", 12), wraplength=th.px(560),
-                     justify="left").pack(anchor="w", padx=th.px(16))
+        body = tk.Frame(win, bg=BG)
+        body.pack(fill="both", expand=True)
+        self._fill_look_shots(body, win)
         bottom = tk.Frame(win, bg=BG)
         bottom.pack(fill="x", padx=th.px(16), pady=(th.px(12), th.px(16)))
-        tk.Label(bottom, text="Boxes show where each digit was found.", bg=BG, fg=DIM,
+        tk.Label(bottom, text="Coloured boxes = digits found. Frame colour = which reader.", bg=BG, fg=DIM,
                  font=th.font("regular", 11)).pack(side="left")
         Button(bottom, th, text="Something's wrong? Report a bug", kind="secondary", width=240, height=36, radius=10,
                size=12, command=lambda: self.report_bug(win), bg=BG).pack(side="right")
+
+    def _reading_open(self):
+        return bool(self.reading_win and self.reading_win.winfo_exists())
+
+    def toggle_show_reading(self):
+        if self._reading_open():
+            self.close_reading_win()
+        else:
+            self.open_reading_win()
+
+    def close_reading_win(self):
+        if self._reading_open():
+            self.reading_win.destroy()
+        self.reading_win = None
+        self.cfg["show_reading"] = False
+        save_config(self.cfg)
+
+    def open_reading_win(self):
+        """Live window of the crops + boxes the reader last saw (lightweight Show reading)."""
+        self.cfg["show_reading"] = True
+        save_config(self.cfg)
+        if self._reading_open():
+            self.reading_win.lift()
+            self._rebuild_reading_win()
+            return
+        th = self.theme
+        w = self.reading_win = tk.Toplevel(self.root)
+        w.title("What it's reading")
+        w.configure(bg=BG)
+        w.attributes("-topmost", bool(self.cfg["topmost"]))
+        w.minsize(th.px(320), th.px(240))
+        for delay in (0, 150, 800):
+            w.after(delay, lambda: PLATFORM.style_window(w, INK, TEXT_DIM) if w.winfo_exists() else None)
+        r = self._window_rect()
+        if r:
+            w.geometry(f"+{r[0] + r[2] + 12}+{r[1]}")
+        head = tk.Frame(w, bg=BG)
+        head.pack(fill="x", padx=th.px(12), pady=(th.px(10), th.px(4)))
+        tk.Label(head, text="What it's reading", bg=BG, fg=ACCENT, font=th.font("extra", 16)).pack(side="left")
+        tk.Label(head, text="updates live", bg=BG, fg=FAINT, font=th.font("regular", 11)).pack(
+            side="left", padx=(th.px(8), 0))
+        Button(head, th, text="Close", kind="secondary", width=72, height=30, radius=9, size=11,
+               command=self.close_reading_win, bg=BG).pack(side="right")
+        tip = tk.Label(w, text="Yellow EXP · Cyan % · Green mesos · Red/blue frames for HP/MP · Purple potions. "
+                               "Same pictures as View capture, kept open.",
+                       bg=BG, fg=DIM, font=th.font("regular", 10), wraplength=th.px(420), justify="left")
+        tip.pack(anchor="w", padx=th.px(12), pady=(0, th.px(6)))
+        holder = tk.Frame(w, bg=BG)
+        holder.pack(fill="both", expand=True, padx=th.px(4), pady=(0, th.px(8)))
+        canvas = tk.Canvas(holder, bg=BG, highlightthickness=0, borderwidth=0)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview,
+                               style="Dark.Vertical.TScrollbar")
+        body = tk.Frame(canvas, bg=BG)
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        w._body, w._canvas, w._imgs = body, canvas, []
+        w.protocol("WM_DELETE_WINDOW", self.close_reading_win)
+        self._rebuild_reading_win()
+
+    def _schedule_reading_refresh(self):
+        if not self.cfg.get("show_reading") and not self._reading_open():
+            return
+        if not self._reading_open() and self.cfg.get("show_reading"):
+            self.open_reading_win()
+            return
+        now = time.monotonic()
+        wait = READING_REFRESH_SECONDS - (now - self._reading_at)
+        if wait <= 0:
+            self._rebuild_reading_win()
+            return
+        if self._reading_pending:
+            return
+        self._reading_pending = True
+        self.root.after(max(50, int(wait * 1000)), self._reading_refresh_due)
+
+    def _reading_refresh_due(self):
+        self._reading_pending = False
+        if self._reading_open():
+            self._rebuild_reading_win()
+
+    def _rebuild_reading_win(self):
+        w = self.reading_win
+        if not w or not w.winfo_exists():
+            return
+        self._reading_at = time.monotonic()
+        body = w._body
+        for child in body.winfo_children():
+            child.destroy()
+        self._fill_look_shots(body, w)
+        w._canvas.configure(scrollregion=w._canvas.bbox("all"))
+
+    def _fill_look_shots(self, parent, img_host):
+        """Pack the current look crops into parent; keep PhotoImages on img_host._imgs."""
+        th = self.theme
+        img_host._imgs = []
+        shots = self._look_shots()
+        if not shots:
+            tk.Label(parent, text="Nothing read yet — open MapleStory with the EXP bar showing.",
+                     bg=BG, fg=DIM, font=th.font("regular", 12), wraplength=th.px(400),
+                     justify="left").pack(anchor="w", padx=th.px(12), pady=th.px(12))
+            return
+        for shot, boxes, text in shots:
+            if shot is not None:
+                try:
+                    empty = hasattr(shot, "size") and shot.size == 0
+                except Exception:
+                    empty = False
+                if not empty:
+                    img_host._imgs.append(self._boxed(shot, boxes, frame=self._shot_frame(text)))
+                    tk.Label(parent, image=img_host._imgs[-1], bg=BG).pack(
+                        padx=th.px(12), pady=(th.px(10), th.px(2)))
+            tk.Label(parent, text=text, bg=BG, fg=FG, font=th.font("semibold", 11),
+                     wraplength=th.px(420), justify="left").pack(anchor="w", padx=th.px(12))
 
     # ---- bug reports
     def report_bug(self, parent=None):
