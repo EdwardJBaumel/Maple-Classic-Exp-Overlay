@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.18-beta
+
+**HP/MP + Critical Recovery (feature flag)**
+- Reads status-bar **HP/MP** as `[current/max]` (same digit font as EXP). Settings → Potions → **Read HP/MP and spot Critical Recovery heals** (on by default; turn off to keep the reader light).
+- When HP or MP jumps up **without** a quick-slot potion use, that counts as a **skill heal** (Critical Recovery) — not charged. Potion **cost** still comes only from the quick-slot bar.
+- Details adds **HP / MP** and **Skill heals**. View capture includes the vitals crop.
+
 ## 0.9.17-beta
 
 **Potion cost reading fixed / clarified**

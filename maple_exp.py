@@ -57,6 +57,7 @@ import level_ocr
 import notices
 import ocr
 import potions
+import vitals
 import report
 import shadow
 from platforms import create_platform, hotkey_text, parse_hotkey
@@ -72,7 +73,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.17-beta"
+VERSION = "0.9.18-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -120,6 +121,7 @@ PART_NOTES = {              # what the status line says while a part of the read
     "mesos": "Mesos can't be read right now",
     "notices": "Gain notices can't be read right now",
     "potions": "The potion bar can't be read right now",
+    "vitals": "HP/MP can't be read right now",
     "window scan": "The party list and shop windows can't be checked right now",
     "class": "The class can't be read right now",
     "name print": "Telling characters apart isn't working right now",
@@ -136,6 +138,7 @@ DEFAULTS = {"gap_seconds": 15, "transparency": 0, "topmost": True,
             "potions_on": True, "potion_prices": {}, "shadow_reader": True,
             "read_status": True,                # the EXP/Mesos/Map/Potions readability strip
             "meso_mode": "notices",             # "notices" = battle/loot lines; "inventory" = mesos box
+            "vitals_on": True,                  # read HP/MP [cur/max]; Crit Recovery vs potion heals
             "job_override": ""}                 # typed class when OCR can't read the status bar
 MESO_FRESH_SECONDS = 20     # a mesos look this recent counts as live
 MESO_STALE_SECONDS = 60     # older than this: ask to open the inventory again
@@ -1863,9 +1866,9 @@ def find_party_bars(bgr, gh, hsv=None):
 
 Reading = namedtuple("Reading", "where candidates confident text image boxes map note "
                                  "mesos mesos_image mesos_boxes party mesos_at window bar percent_only level exp_kind tries ms shadow v2_at "
-                                 "notices",
+                                 "notices vitals",
                      defaults=((), False, "", None, (), None, None, None, None, (), None, None, None, None, False, None,
-                               None, (), None, None, None, None))
+                               None, (), None, None, None, None, None))
 # percent_only: the bar shows just "[58.47%]" (candidates are then [(None, pct)]); level: the level read
 # from the status bar's LV badge, with where it came from, as (level, source), or None
 # exp_kind, tries and ms are for health reports (healthlog.py): how the EXP look went (read, tesseract, unclear,
@@ -1874,6 +1877,7 @@ Reading = namedtuple("Reading", "where candidates confident text image boxes map
 # shadow and v2_at are for shadow mode (shadow.py): (what happened, v2's milliseconds), and (key, box) when reader v2
 # found the bar in a new place, to remember in the config
 # notices: OCR lines from the right-side battle/loot strip when meso_mode is "notices" (None = not read this look)
+# vitals: vitals.Vitals(hp, mp) from status-bar [cur/max], or None if not looked this time
 
 
 def _view(img, lay):
@@ -1937,6 +1941,9 @@ class ScreenReader:
         self.next_bar, self.bar_reads, self.bar_shift = 0.0, 0, (0, 0)
         self.bar_scale = None       # last scale that found potions (UI size can disagree with window_h)
         self.potion_look = None     # {"image", "text", "scale"} from the last bar look (View capture)
+        self.vitals_on = True       # read HP/MP [cur/max] (set from Settings)
+        self.vitals_look = None     # {"image", "text"} last vitals crop
+        self.next_vitals = 0.0
         self.next_outline = 0.0     # the earliest time to search for a see-through mesos box again
         self.party_area = None      # where the party list was last seen, on screen
         self.next_scan = 0.0
@@ -2532,7 +2539,7 @@ class ScreenReader:
                             self.party_area = (sx + x0 - int(g), sy + y0 - int(g),
                                                x1 - x0 + int(2 * g), y1 - y0 + int(2 * g))
                 self._part_ok("window scan")
-        mesos, image, boxes, notice_lines = None, None, (), None
+        mesos, image, boxes, notice_lines, got_vitals = None, None, (), None, None
         self.mesos_covered = False
         self.notices_covered = False
         # Notices are always scanned (for Etc value). Inventory mode also reads the mesos box.
@@ -2569,9 +2576,15 @@ class ScreenReader:
                 if bar is not None:
                     self._part_ok("potions")
                     self._tried("potions", bool(bar))
+        if self.vitals_on and self.box and self.gh and now >= self.next_vitals:
+            with self._part("vitals"):
+                got_vitals = self._read_vitals(capture, rect, notes)
+                self.next_vitals = time.monotonic() + POTION_SECONDS
+                if got_vitals is not None:
+                    self._part_ok("vitals")
         return reading._replace(mesos=mesos, mesos_image=image, mesos_boxes=boxes, party=party,
                                 mesos_at=moved, window=window, bar=bar, notices=notice_lines,
-                                note=" ".join(notes) or None)
+                                vitals=got_vitals, note=" ".join(notes) or None)
 
     def _read_notices(self, capture, rect, notes):
         """OCR lines from the right-side battle/loot strip, or None if this look couldn't try.
@@ -2597,6 +2610,35 @@ class ScreenReader:
         except ocr.TesseractError as e:
             self._part_failed("notices", e)
             return None
+
+    def _read_vitals(self, capture, rect, notes):
+        """HP/MP [current/max] from the status bar left of EXP, or None if this look couldn't try."""
+        capture = self.capture = as_capture(capture)
+        if not self.templates or not self.box or not self.gh:
+            return None
+        wx, wy, ww, wh = rect
+        g = self.gh
+        # EXP number starts near box[0]; HP/MP sit left of it on the same row (same strip as class).
+        ex0 = wx + self.box[0]
+        cy = wy + (self.box[1] + self.box[3]) / 2
+        x0 = max(wx, int(ex0 - 70 * g))
+        x1 = min(wx + ww, int(ex0 + 2 * g))
+        y0 = max(wy, int(cy - 3 * g))
+        y1 = min(wy + wh, int(cy + 4 * g))
+        if x1 - x0 < 8 * g or y1 - y0 < 2 * g:
+            return None
+        if self._blocked(x0, y0, x1 - x0, y1 - y0, margin=2):
+            notes.append("This window is covering HP/MP.")
+            return None
+        shot = capture.grab(x0, y0, x1 - x0, y1 - y0)
+        if not shot:
+            return None
+        img = shot[0]
+        got = vitals.read_vitals(img, self.templates, sys.modules[__name__])
+        text = " · ".join(
+            f"{label} {v.current}/{v.max}" for label, v in (("HP", got.hp), ("MP", got.mp)) if v)
+        self.vitals_look = {"image": img.copy(), "text": text or "nothing"}
+        return got
 
     def _read_potion_bar(self, capture, rect, notes):
         """The potions and food on the potion bar as a tuple of potions.Slot (empty: none, or it
@@ -3441,6 +3483,7 @@ class Session:
         self.exp, self.meso = ExpTracker(), MesoTracker()
         self.notices = notices.NoticeTracker()
         self.potions = potions.PotionTracker()
+        self.vitals = vitals.VitalsTracker()
         self.gap = gap
         self.on = False             # Start was pressed (and Pause wasn't)
         self.waiting = None         # paused by itself: "idle" or "map"
@@ -3465,12 +3508,14 @@ class Session:
         self.meso.pause(bank_inventory=self.map is None or self.here is None or self.here == self.map)
         self.notices.pause()
         self.potions.pause()
+        self.vitals.pause()
 
     def reset(self):
         self.exp.reset()
         self.meso.reset()
         self.notices.reset()
         self.potions.reset()
+        self.vitals.reset()
         self.on, self.waiting, self.map, self.last_gain = False, None, None, None
         self.paused_at, self.fresh_restart = None, False
 
@@ -3484,6 +3529,7 @@ class Session:
         self.meso.reset()
         self.notices.reset()
         self.potions.reset()
+        self.vitals.reset()
         self.map = self.here
         self.fresh_restart = True
 
@@ -3492,6 +3538,7 @@ class Session:
         self.meso.pause(stale=why != "idle")      # (leaving the map: a shop or a trade may follow)
         self.notices.pause(stale=why != "idle")
         self.potions.pause()
+        self.vitals.pause()
         self.waiting = why
         if self.paused_at is None:
             self.paused_at = time.monotonic() if now is None else now
@@ -3523,8 +3570,16 @@ class Session:
         return result
 
     def look_at_bar(self, slots):
-        """Feeds a look at the potion bar: what went down since the last look was used."""
+        """Feeds a look at the potion bar: what went down since the last look was used.
+        Returns {name: n} used on this look (for pairing with HP/MP heals)."""
+        before = dict(self.potions.used)
         self.potions.observe(slots, self.exp.running)
+        return {n: self.potions.used[n] - before.get(n, 0)
+                for n in self.potions.used if self.potions.used[n] > before.get(n, 0)}
+
+    def look_at_vitals(self, reading, potion_delta, now):
+        """Feeds status-bar HP/MP; pairs increases with potion_delta to spot Crit Recovery."""
+        self.vitals.observe(reading, potion_delta, now, self.exp.running)
 
     def map_blind(self):
         """The minimap's name has been out of sight for a while (hidden, covered, or the game
@@ -4446,6 +4501,7 @@ class App:
         self.session = Session(self.cfg["gap_seconds"])
         self.tracker = self.session.exp
         self.reader.meso_mode = self.cfg.get("meso_mode", "notices")
+        self.reader.vitals_on = bool(self.cfg.get("vitals_on", True))
         self.party = 1
         self._party_seen = (None, 0)
         self.last_mesos = None
@@ -5193,10 +5249,13 @@ class App:
         self._section(body, "Potions")
         potions_on = tk.BooleanVar(value=bool(self.cfg["potions_on"]))
         self._switch(body, "Count potions used and what they cost", potions_on).pack(anchor="w")
-        tk.Label(body, text="Reads the quick-slot bar (bottom right): when a stack count goes down, that use is "
-                            "priced at the NPC shop buy. Critical Recovery is an Assassin skill — it isn't a "
-                            "potion and has no meso cost; it just means you drink less, which shows up once the "
-                            "bar is readable. Details → Potion cost says \"bar unread\" until pots are found.",
+        vitals_on = tk.BooleanVar(value=bool(self.cfg.get("vitals_on", True)))
+        self._switch(body, "Read HP/MP and spot Critical Recovery heals", vitals_on).pack(
+            anchor="w", pady=(px(6), 0))
+        tk.Label(body, text="Potion cost still comes from the quick-slot bar (bottom right). HP/MP "
+                            "[current/max] next to your character are read like EXP. When HP or MP jumps "
+                            "up with no pot used, that counts as a skill heal (Critical Recovery) — not "
+                            "charged. Details shows HP/MP and skill heals. Turn off to keep the reader light.",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
         price_line = tk.Frame(body, bg=BG)
         price_line.pack(fill="x", pady=(px(8), 0))
@@ -5204,6 +5263,7 @@ class App:
         Button(price_line, th, text="Prices", kind="secondary", width=80, height=34, radius=10, size=12,
                command=self.open_potion_prices, bg=BG).pack(side="right")
         self._potions_on = potions_on
+        self._vitals_on = vitals_on
 
         self._section(body, "EXP bar without a number")
         level_line = tk.Frame(body, bg=BG)
@@ -5241,6 +5301,8 @@ class App:
             self.cfg["topmost"] = bool(topmost.get())
             self.cfg["check_updates"] = bool(updates.get())
             self.cfg["potions_on"] = bool(potions_on.get())
+            self.cfg["vitals_on"] = bool(vitals_on.get())
+            self.reader.vitals_on = self.cfg["vitals_on"]
             self.cfg["read_status"] = bool(read_status.get())
             typed = job_var.get().strip()
             if typed:
@@ -5265,7 +5327,8 @@ class App:
                 self.root.after(60, self._reopen_settings)        # (drawn again at the new size)
             save_config(self.cfg)
 
-        for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on, read_status, job_var):
+        for var in (gap, transparency, topmost, updates, sharing, health_on, size, potions_on, vitals_on,
+                    read_status, job_var):
             var.trace_add("write", apply)
         self._hotkey_settings(body)
         buttons = tk.Frame(body, bg=BG)
@@ -5899,14 +5962,17 @@ class App:
             self.cfg["exp_v2_spots"] = dict(list(spots.items())[-V2_SPOTS_MAX:])
             self.reader.saved_v2 = dict(self.cfg["exp_v2_spots"])
             save_config(self.cfg)
+        potion_delta = {}
         if r.bar is not None:
             self.potion_bar = r.bar
             if r.bar:
                 self._potions_seen_at = now
             if self.cfg["potions_on"]:
-                self.session.look_at_bar(r.bar)
+                potion_delta = self.session.look_at_bar(r.bar)
             else:
                 self.session.potions.pause()            # (switched on again later: nothing used meanwhile counts)
+        if r.vitals is not None and self.cfg.get("vitals_on", True):
+            self.session.look_at_vitals(r.vitals, potion_delta, now)
         notice_mode = self.cfg.get("meso_mode") == "notices"
         # Notices always feed Etc value (and notice-mode mesos). Inventory mesos are separate.
         if r.notices is not None:
@@ -6288,6 +6354,29 @@ class App:
             return "bar unread"
         return "0"
 
+    def _vitals_text(self):
+        """Details → HP / MP: last status-bar reading."""
+        if not self.cfg.get("vitals_on", True):
+            return "—"
+        v = self.session.vitals
+        if not v.last_lines:
+            return "—" if v.seen_at is None else "unread"
+        return " · ".join(v.last_lines)
+
+    def _skill_heals_text(self):
+        """Details → Skill heals: Crit Recovery-like HP/MP jumps (no potion used)."""
+        if not self.cfg.get("vitals_on", True):
+            return "—"
+        v = self.session.vitals
+        if not v.skill_heals:
+            return "0" if v.seen_at is not None else "—"
+        bits = [f"×{v.skill_heals}"]
+        if v.skill_hp:
+            bits.append(f"+{fmt_short(v.skill_hp)} HP")
+        if v.skill_mp:
+            bits.append(f"+{fmt_short(v.skill_mp)} MP")
+        return " ".join(bits)
+
     def _net(self, el):
         """(Net mesos/hr as text, a note or None).
 
@@ -6413,6 +6502,8 @@ class App:
                      "Etc drops": self._etc_drops_text(),
                      "Potion gain": self._potion_loot_text(),
                      "Potion cost": self._potion_cost_text(),
+                     "HP / MP": self._vitals_text(),
+                     "Skill heals": self._skill_heals_text(),
                      "Net mesos / hr": net,
                      "Left out": self._left_out_text(m, notice_mode)},
             state=state, state_text=state_text,
@@ -6885,6 +6976,10 @@ class App:
             shots.append((plook.get("image"), [],
                           f"Potion bar. Read: {plook.get('text') or 'nothing'}   "
                           f"(scale {plook.get('scale', '?')})"))
+        vlook = getattr(self.reader, "vitals_look", None)
+        if vlook:
+            shots.append((vlook.get("image"), [],
+                          f"HP/MP. Read: {vlook.get('text') or 'nothing'}"))
         for kept in list(self.reader.shadow.kept):
             shots.append((kept["image"], kept["boxes"], f"Reader v2 test ({kept['kind']}). Old: {report.answer_text(kept['old'])}"
                                                         f"   v2: {report.answer_text(kept['v2'])}"))
