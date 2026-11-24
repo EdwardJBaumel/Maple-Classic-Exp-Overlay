@@ -21,6 +21,9 @@ SKILL_HEAL_MIN = 0.04
 SKILL_HEAL_MAX = 0.15
 # Absolute floor so tiny OCR noise isn't a heal.
 HEAL_MIN = 15
+# Potion cost from what HP/MP potions restored (not NPC shop sticker): 1 meso per HP, 2 per MP.
+MESO_PER_HP = 1
+MESO_PER_MP = 2
 
 
 def _slash_index(inside, bh):
@@ -103,13 +106,30 @@ def read_vital(tpl, helpers, cur_lay, max_lay):
     return Vital(cur_n, max_n)
 
 
+def _digit_boxes(lay, kind):
+    """View-capture / Show-reading boxes for one side's digits: (x0, y0, x1, y1, kind)."""
+    g = lay.gh
+    return [(c[0] - c[1] / 2, lay.cy - g / 2, c[0] + c[1] / 2, lay.cy + g / 2, kind)
+            for c in lay.exp]
+
+
 def read_vitals(bgr, tpl, helpers):
-    """Vitals(hp, mp) from a status-bar crop or full window strip; sides may be None."""
+    """(Vitals(hp, mp), boxes) from a status-bar crop; sides may be None.
+
+    boxes are digit rects tagged "hp" / "mp" for Show reading and View capture.
+    """
     pairs = find_vital_layouts(bgr, helpers)
-    read = [read_vital(tpl, helpers, a, b) for a, b in pairs]
+    read, boxes = [], []
+    for i, (cur, mx) in enumerate(pairs):
+        kind = "hp" if i == 0 else "mp"
+        got = read_vital(tpl, helpers, cur, mx)
+        read.append(got)
+        if got:
+            boxes.extend(_digit_boxes(cur, kind))
+            boxes.extend(_digit_boxes(mx, kind))
     hp = read[0] if len(read) >= 1 else None
     mp = read[1] if len(read) >= 2 else None
-    return Vitals(hp, mp)
+    return Vitals(hp, mp), boxes
 
 
 def looks_like_skill_heal(delta, pool_max):
@@ -123,9 +143,10 @@ def looks_like_skill_heal(delta, pool_max):
 class VitalsTracker:
     """Tracks HP/MP and classifies increases as potion drinks vs skill heals.
 
-    Potion cost still comes from the quick-slot bar. This only discerns Critical Recovery
-    (and similar) so Details can show skill heals separately and so a drink that didn't
-    move the bar isn't confused with Crit Recovery.
+    Critical Recovery (and similar) is not charged. Potion cost is HP/MP restored by
+    drinks × MESO_PER_HP / MESO_PER_MP (1 meso per HP, 2 per MP). A quick-slot use still
+    marks a window as "drank"; a clear non-skill heal without a bar match is also counted
+    as a potion restore so cost works when the bar is empty or unread.
     """
 
     def __init__(self):
@@ -136,13 +157,19 @@ class VitalsTracker:
         self.skill_heals = 0              # how many Crit-Recovery-like jumps
         self.skill_hp = 0                 # HP restored by those jumps
         self.skill_mp = 0
-        self.potion_heals = 0             # increases that lined up with a bar use
+        self.potion_heals = 0             # increases counted as potion restores
+        self.potion_hp = 0                # HP restored by those (for cost)
+        self.potion_mp = 0
         self.seen_at = None
         self.drank_until = 0.0            # potion-bar use still "counts" for a few seconds
         self.last_lines = ()
 
     def pause(self):
         self.hp = self.mp = None          # baselines only while tracking
+
+    def heal_cost(self):
+        """Mesos for potion HP/MP restored: potion_hp × 1 + potion_mp × 2."""
+        return self.potion_hp * MESO_PER_HP + self.potion_mp * MESO_PER_MP
 
     def observe(self, vitals, potion_used_delta, now, running):
         """vitals: Vitals; potion_used_delta: {name: n} used since last look (may be empty)."""
@@ -176,12 +203,16 @@ class VitalsTracker:
         delta = vital.current - prev.current
         if delta < HEAL_MIN:
             return
-        if drank:
-            self.potion_heals += 1
-            return
-        if looks_like_skill_heal(delta, vital.max):
+        if looks_like_skill_heal(delta, vital.max) and not drank:
             self.skill_heals += 1
             if which == "hp":
                 self.skill_hp += delta
             else:
                 self.skill_mp += delta
+            return
+        # Potion / food restore: bar use lined up, or a heal that isn't Crit-shaped.
+        self.potion_heals += 1
+        if which == "hp":
+            self.potion_hp += delta
+        else:
+            self.potion_mp += delta

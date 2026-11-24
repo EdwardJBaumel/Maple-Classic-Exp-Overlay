@@ -155,11 +155,11 @@ SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and St
 WHATS_NEW = {"0.9.18-beta": (
     (None, None, (
         ("head", "See what it's reading"),
-        "… → Show reading (or Settings) opens a live window of the crops: EXP, mesos, HP/MP, potion bar, "
-        "map and class, with coloured boxes on the digits. Same as View capture, kept open while you play.",
-        ("head", "Empty potion bar"),
-        "If the quick-slot bar is visible but empty, Details says 0 (nothing on bar) instead of bar unread. "
-        "Drag HP/MP pots there so potion cost can count.")),),
+        "… → Show reading (or Settings) opens a live window of the crops: EXP and HP/MP first, then mesos, "
+        "potion bar, map and class — coloured boxes on the digits. Same as View capture, kept open while you play.",
+        ("head", "Potion cost from HP/MP"),
+        "Potion cost is 1 meso per HP and 2 mesos per MP your drinks restore. Critical Recovery isn't charged. "
+        "Details shows the total; Net mesos/hr uses it.")),),
     "0.9.13-beta": (
     (None, None, (
         ("head", "Fewer reading problems"),
@@ -2645,10 +2645,10 @@ class ScreenReader:
         if not shot:
             return None
         img = shot[0]
-        got = vitals.read_vitals(img, self.templates, sys.modules[__name__])
+        got, boxes = vitals.read_vitals(img, self.templates, sys.modules[__name__])
         text = " · ".join(
             f"{label} {v.current}/{v.max}" for label, v in (("HP", got.hp), ("MP", got.mp)) if v)
-        self.vitals_look = {"image": img.copy(), "text": text or "nothing"}
+        self.vitals_look = {"image": img.copy(), "text": text or "nothing", "boxes": boxes}
         return got
 
     def _read_potion_bar(self, capture, rect, notes):
@@ -5290,10 +5290,11 @@ class App:
         vitals_on = tk.BooleanVar(value=bool(self.cfg.get("vitals_on", True)))
         self._switch(body, "Read HP/MP and spot Critical Recovery heals", vitals_on).pack(
             anchor="w", pady=(px(6), 0))
-        tk.Label(body, text="Potion cost still comes from the quick-slot bar (bottom right). HP/MP "
-                            "[current/max] next to your character are read like EXP. When HP or MP jumps "
-                            "up with no pot used, that counts as a skill heal (Critical Recovery) — not "
-                            "charged. Details shows HP/MP and skill heals. Turn off to keep the reader light.",
+        tk.Label(body, text="HP/MP [current/max] are read like EXP. Potion cost is 1 meso per HP and "
+                            "2 mesos per MP restored by drinks (not Crit Recovery). A quick-slot use "
+                            "helps tell drinks from Crit Recovery; clear non-skill heals still count if "
+                            "the bar is empty. Details shows HP/MP, skill heals and cost. Turn off to "
+                            "keep the reader light.",
                  wraplength=wrap, justify="left", **dim).pack(anchor="w", pady=(px(4), 0))
         price_line = tk.Frame(body, bg=BG)
         price_line.pack(fill="x", pady=(px(8), 0))
@@ -6270,7 +6271,8 @@ class App:
         potions_now = None
         if self.cfg["potions_on"]:
             used = self.session.potions.used
-            potions_now = (dict(used), self.session.potions.cost(self._prices().mapping()))
+            # Log still stores bar item counts; cost is heal-based (1/HP · 2/MP) when vitals are on.
+            potions_now = (dict(used), self._potion_cost_amount())
         entry = self.autolog.tick(now, self.map_name, self.level, self.party, job=self._class_name(), map_read=self.map_read,
                                   hidden=self.map_hidden, potions=potions_now,
                                   estimated=self.tracker.estimated and self.tracker.percent_mode, **self.meso.for_log())
@@ -6391,10 +6393,32 @@ class App:
         n = self.session.notices
         return self._loot_text(n.potion_gained, n.potion_loot_per_hour(self.tracker.elapsed()))
 
+    def _potion_cost_amount(self):
+        """Mesos spent on drinks this session: HP×1 + MP×2 from vitals, else NPC bar prices."""
+        if self.cfg.get("vitals_on", True):
+            return self.session.vitals.heal_cost()
+        return self.session.potions.cost(self._prices().mapping())
+
     def _potion_cost_text(self):
-        """Details → Potion cost: NPC buy of what you drank from the quick-slot bar."""
+        """Details → Potion cost: 1 meso/HP + 2 mesos/MP restored by drinks (vitals on)."""
         if not self.cfg["potions_on"]:
             return "—"
+        if self.cfg.get("vitals_on", True):
+            v = self.session.vitals
+            cost = v.heal_cost()
+            if cost or v.potion_heals:
+                bits = [fmt_num(cost)]
+                if v.potion_hp or v.potion_mp:
+                    parts = []
+                    if v.potion_hp:
+                        parts.append(f"+{fmt_short(v.potion_hp)} HP")
+                    if v.potion_mp:
+                        parts.append(f"+{fmt_short(v.potion_mp)} MP")
+                    bits.append("(" + " · ".join(parts) + " @1/2)")
+                return " ".join(bits)
+            if v.seen_at is not None:
+                return "0"
+            return "—" if self._potions_seen_at is None else "0"
         used = self.session.potions.used
         cost = self.session.potions.cost(self._prices().mapping())
         if used:
@@ -6433,8 +6457,8 @@ class App:
 
         Own row: mesos/hr + etc gain/hr + potion gain/hr − potion cost/hr.
         Etc/Potion gain are listed separately in Details; this combines them.
-        Potion cost is only subtracted when potion counting is on; a used potion
-        priced at 0 still asks for a price first.
+        Potion cost is HP×1 + MP×2 from drinks when vitals are on; otherwise NPC
+        bar prices (a used potion priced at 0 still asks for a price first).
         """
         dash = "—"
         if not el:
@@ -6445,11 +6469,14 @@ class App:
         gross = (meso_hr or 0) + (loot_hr or 0)
         cost = 0
         if self.cfg["potions_on"]:
-            prices, used = self._prices(), self.session.potions.used
-            note = prices.note(used)
-            if note:
-                return dash, note
-            cost = self.session.potions.cost(prices.mapping()) / el * 3600
+            if self.cfg.get("vitals_on", True):
+                cost = self._potion_cost_amount() / el * 3600
+            else:
+                prices, used = self._prices(), self.session.potions.used
+                note = prices.note(used)
+                if note:
+                    return dash, note
+                cost = self.session.potions.cost(prices.mapping()) / el * 3600
         return fmt_num(gross - cost), None
 
     def _prices(self):
@@ -6811,8 +6838,8 @@ class App:
             side="left", padx=(th.px(8), 0))
         Button(head, th, text="Close", kind="secondary", width=72, height=30, radius=9, size=11,
                command=self.close_reading_win, bg=BG).pack(side="right")
-        tip = tk.Label(w, text="Yellow EXP · Cyan % · Green mesos · Red/blue frames for HP/MP · Purple potions. "
-                               "Same pictures as View capture, kept open.",
+        tip = tk.Label(w, text="Yellow EXP · Cyan % · Red HP · Blue MP · Green mesos · Purple potions. "
+                               "Potion cost = 1 meso/HP + 2 mesos/MP restored. Same as View capture, live.",
                        bg=BG, fg=DIM, font=th.font("regular", 10), wraplength=th.px(420), justify="left")
         tip.pack(anchor="w", padx=th.px(12), pady=(0, th.px(6)))
         holder = tk.Frame(w, bg=BG)
@@ -7136,27 +7163,30 @@ class App:
         return getattr(self, "_worker_thread", None) is None or self._worker_thread.is_alive()
 
     def _look_shots(self):
-        """What each reader last saw, with a line on how it went: [(picture or None, boxes, text)]."""
+        """What each reader last saw, with a line on how it went: [(picture or None, boxes, text)].
+
+        EXP then HP/MP first so Show reading highlights the status bar numbers you care about.
+        """
         r, mr = self.last_capture, self.last_mesos
         shots = []
         if r:
             shots.append((r.image, r.boxes, f"EXP bar. Read: {r.text or 'nothing'}   ({r.where})"))
+        vlook = getattr(self.reader, "vitals_look", None)
+        if vlook:
+            shots.append((vlook.get("image"), vlook.get("boxes") or [],
+                          f"HP/MP. Read: {vlook.get('text') or 'nothing'}"))
         if mr:
             read = fmt_num(mr.mesos) if mr.mesos is not None else "nothing (waiting for a clear look)"
             shots.append((mr.mesos_image, mr.mesos_boxes, f"Mesos. Read: {read}"))
-        look = getattr(self.reader, "notices_look", None)
-        if look:
-            shots.append((look.get("image"), [],
-                          f"Gain notices. Read: {look.get('text') or 'nothing (no bright lines)'}"))
         plook = getattr(self.reader, "potion_look", None)
         if plook:
             shots.append((plook.get("image"), [],
                           f"Potion bar. Read: {plook.get('text') or 'nothing'}   "
                           f"(scale {plook.get('scale', '?')})"))
-        vlook = getattr(self.reader, "vitals_look", None)
-        if vlook:
-            shots.append((vlook.get("image"), [],
-                          f"HP/MP. Read: {vlook.get('text') or 'nothing'}"))
+        look = getattr(self.reader, "notices_look", None)
+        if look:
+            shots.append((look.get("image"), [],
+                          f"Gain notices. Read: {look.get('text') or 'nothing (no bright lines)'}"))
         for kept in list(self.reader.shadow.kept):
             shots.append((kept["image"], kept["boxes"], f"Reader v2 test ({kept['kind']}). Old: {report.answer_text(kept['old'])}"
                                                         f"   v2: {report.answer_text(kept['v2'])}"))
