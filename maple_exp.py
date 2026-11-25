@@ -73,7 +73,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.18-beta"
+VERSION = "0.9.19-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -152,7 +152,13 @@ SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and St
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
                 "bar": "One thin strip with the main numbers and a slim level bar."}
 # What's new, shown once after updating to a version (plain words, newest changes only). A version with no entry shows nothing.
-WHATS_NEW = {"0.9.18-beta": (
+WHATS_NEW = {"0.9.19-beta": (
+    (None, None, (
+        ("head", "Potion cost fixed (Crit Recovery)"),
+        "Orange Potion, Lemon and other common drinks were being counted as Critical Recovery when the "
+        "quick-slot bar missed a use — Potion cost stuck at 0. Those restores are matched by size now, "
+        "and the bar no longer locks onto an empty wrong scale.")),),
+    "0.9.18-beta": (
     (None, None, (
         ("head", "See what it's reading"),
         "… → Show reading (or Settings) opens a live window of the crops: EXP and HP/MP first, then mesos, "
@@ -2700,7 +2706,7 @@ class ScreenReader:
             meta = (ox, oy, ex, ey, sx, sy, scale)
             if slots:
                 self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
-                self.bar_scale = scale
+                self.bar_scale = scale      # only lock scale when consumables were identified
                 self.bar_reads += 1
                 self.bar_ok = True
                 return tuple(slots)
@@ -2709,13 +2715,14 @@ class ScreenReader:
             elif best_miss is None:
                 best_miss = (item_n, tuple(slots)) + meta
             if not full and self.bar_scale:
-                break                       # stuck to the known scale between full looks
+                break                       # stuck to the known (pot-proven) scale between full looks
         pick = best_empty or best_miss
         if pick is not None:
             _, slots, ox, oy, ex, ey, sx, sy, scale = pick
             self.bar_shift = (ox - (ex + wx - sx), oy - (ey + wy - sy))
             if best_empty is not None:
-                self.bar_scale = scale
+                # Empty chrome: bar is here, but do not lock scale — a wrong empty scale was
+                # freezing Potion cost at 0 (pots never identified; Crit-shaped drinks skipped).
                 self.bar_ok = True
                 self.bar_reads += 1
                 return slots
@@ -6396,7 +6403,13 @@ class App:
     def _potion_cost_amount(self):
         """Mesos spent on drinks this session: HP×1 + MP×2 from vitals, else NPC bar prices."""
         if self.cfg.get("vitals_on", True):
-            return self.session.vitals.heal_cost()
+            cost = self.session.vitals.heal_cost()
+            if cost:
+                return cost
+            # Bar saw uses but HP/MP never credited them (unread vitals / missed pairing).
+            if self.session.potions.used:
+                return self.session.potions.cost(self._prices().mapping())
+            return cost
         return self.session.potions.cost(self._prices().mapping())
 
     def _potion_cost_text(self):

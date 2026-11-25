@@ -24,6 +24,12 @@ HEAL_MIN = 15
 # Potion cost from what HP/MP potions restored (not NPC shop sticker): 1 meso per HP, 2 per MP.
 MESO_PER_HP = 1
 MESO_PER_MP = 2
+# Classic World consumable restores (game data). Orange Potion / Lemon sit inside the Crit %
+# band at mid levels, so matching these beats the % heuristic when the quick-slot bar misses a drink.
+# Slack covers OCR ± a couple of HP/MP and "almost full" clamps.
+RESTORE_SLACK = 3
+HP_RESTORES = (40, 60, 100, 120, 160, 250, 300, 360, 500, 1000, 2500)
+MP_RESTORES = (30, 50, 150, 200, 300, 1000)
 
 
 def _slash_index(inside, bh):
@@ -140,6 +146,23 @@ def looks_like_skill_heal(delta, pool_max):
     return SKILL_HEAL_MIN <= share <= SKILL_HEAL_MAX
 
 
+def looks_like_consumable_restore(delta, which="hp", room=None):
+    """True if delta matches a known potion/food restore (or a clamp to full of that size).
+
+    which: 'hp' or 'mp'. room: how much was missing before the heal (max - prev); when the
+    pool hit max, a White Potion that only filled 80 still counts if room <= a known restore.
+    """
+    if delta is None or delta < HEAL_MIN:
+        return False
+    known = HP_RESTORES if which == "hp" else MP_RESTORES
+    if any(abs(delta - n) <= RESTORE_SLACK for n in known):
+        return True
+    # Clamped to full: restored `delta` (== room) from a drink bigger than the gap.
+    if room is not None and room == delta:
+        return any(n >= room - RESTORE_SLACK for n in known if n >= HEAL_MIN)
+    return False
+
+
 class VitalsTracker:
     """Tracks HP/MP and classifies increases as potion drinks vs skill heals.
 
@@ -203,14 +226,23 @@ class VitalsTracker:
         delta = vital.current - prev.current
         if delta < HEAL_MIN:
             return
-        if looks_like_skill_heal(delta, vital.max) and not drank:
+        room = prev.max - prev.current
+        # Known potion/food sizes win over Crit % (Orange Potion 250 / Lemon 150 look Crit-shaped).
+        if drank or looks_like_consumable_restore(delta, which, room=room):
+            self.potion_heals += 1
+            if which == "hp":
+                self.potion_hp += delta
+            else:
+                self.potion_mp += delta
+            return
+        if looks_like_skill_heal(delta, vital.max):
             self.skill_heals += 1
             if which == "hp":
                 self.skill_hp += delta
             else:
                 self.skill_mp += delta
             return
-        # Potion / food restore: bar use lined up, or a heal that isn't Crit-shaped.
+        # Other clear heals (big food, elixirs) still count as potion cost.
         self.potion_heals += 1
         if which == "hp":
             self.potion_hp += delta

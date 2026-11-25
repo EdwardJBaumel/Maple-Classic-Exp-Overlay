@@ -36,11 +36,12 @@ for name, want in (("status_gh11.png", (1033, 1134)),
           boxes and all(b[4] == "hp" for b in boxes))
 
 # ---- skill heal vs potion
+# +90 on 1000 = 9% Crit band, and 90 is not a Classic potion size (100 would be Red Potion).
 t = vitals.VitalsTracker()
 t.observe(vitals.Vitals(vitals.Vital(900, 1000), vitals.Vital(400, 500)), {}, now=1, running=True)
-t.observe(vitals.Vitals(vitals.Vital(1000, 1000), vitals.Vital(400, 500)), {}, now=2, running=True)
-check("10% HP jump with no pot is a skill heal (Crit Recovery)",
-      t.skill_heals == 1 and t.skill_hp == 100 and t.potion_heals == 0 and t.heal_cost() == 0)
+t.observe(vitals.Vitals(vitals.Vital(990, 1000), vitals.Vital(400, 500)), {}, now=2, running=True)
+check("Crit-% HP jump that isn't a potion size is a skill heal",
+      t.skill_heals == 1 and t.skill_hp == 90 and t.potion_heals == 0 and t.heal_cost() == 0)
 
 t2 = vitals.VitalsTracker()
 t2.observe(vitals.Vitals(vitals.Vital(800, 1000), None), {}, now=1, running=True)
@@ -61,10 +62,35 @@ t4.observe(vitals.Vitals(vitals.Vital(800, 1000), None), {}, now=2, running=True
 check("big non-Crit heal without bar use is potion cost",
       t4.potion_hp == 300 and t4.skill_heals == 0 and t4.heal_cost() == 300)
 
+# Orange Potion 250 HP ≈ 10% of 2500 — Crit-shaped, but a known consumable size.
+t5 = vitals.VitalsTracker()
+t5.observe(vitals.Vitals(vitals.Vital(2000, 2500), None), {}, now=1, running=True)
+t5.observe(vitals.Vitals(vitals.Vital(2250, 2500), None), {}, now=2, running=True)
+check("Orange Potion-sized HP counts as potion even without bar (not Crit)",
+      t5.potion_hp == 250 and t5.skill_heals == 0 and t5.heal_cost() == 250)
+
+# Lemon 150 MP ≈ 15% of 1000 — same trap for Assassin Crit Recovery + Lemon.
+t6 = vitals.VitalsTracker()
+t6.observe(vitals.Vitals(None, vitals.Vital(700, 1000)), {}, now=1, running=True)
+t6.observe(vitals.Vitals(None, vitals.Vital(850, 1000)), {}, now=2, running=True)
+check("Lemon-sized MP counts as potion even without bar",
+      t6.potion_mp == 150 and t6.skill_heals == 0 and t6.heal_cost() == 300)
+
+# True Crit % that isn't a known potion size stays a skill heal.
+t7 = vitals.VitalsTracker()
+t7.observe(vitals.Vitals(vitals.Vital(1800, 2000), None), {}, now=1, running=True)
+t7.observe(vitals.Vitals(vitals.Vital(1980, 2000), None), {}, now=2, running=True)  # +180 = 9%
+check("Crit-sized heal that isn't a potion size stays a skill heal",
+      t7.skill_heals == 1 and t7.skill_hp == 180 and t7.heal_cost() == 0)
+
 check("tiny regen is ignored",
       not vitals.looks_like_skill_heal(5, 1000))
 check("Crit Recovery-sized share is a skill heal",
       vitals.looks_like_skill_heal(100, 1000))
+check("Orange Potion size is a consumable restore",
+      vitals.looks_like_consumable_restore(250, "hp"))
+check("Lemon size is a consumable restore",
+      vitals.looks_like_consumable_restore(150, "mp"))
 
 cfg = m.load_config()
 check("vitals_on defaults on", cfg.get("vitals_on") is True)

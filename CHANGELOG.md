@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.19-beta
+
+**Potion cost stuck at 0 with Critical Recovery**
+- Orange Potion (250 HP), Lemon (150 MP) and other common drinks fall in the Crit-Recovery % band, so with no quick-slot match they were charged as skill heals → cost 0. Restores are matched against Classic consumable sizes first.
+- Empty quick-slot chrome no longer locks the UI scale (a wrong empty scale stopped pots being identified).
+- If the bar counts uses but HP/MP never credits them, cost falls back to NPC bar prices.
+
 ## 0.9.18-beta
 
 **Show what it's reading**
