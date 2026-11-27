@@ -95,6 +95,9 @@ check("Lemon size is a consumable restore",
 cfg = m.load_config()
 check("vitals_on defaults on", cfg.get("vitals_on") is True)
 
+# Status row geometry: HP bar is ~31–35 digit-heights left of EXP (read_job); keep room for HP+MP.
+check("STATUS_ROW_LEFT keeps HP+MP with EXP", m.STATUS_ROW_LEFT >= 55)
+
 print()
 if failures:
     print(f"{failures} failed")

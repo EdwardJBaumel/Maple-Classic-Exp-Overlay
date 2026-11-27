@@ -73,7 +73,7 @@ PLATFORM = create_platform()
 PLATFORM.setup_process()
 cv2.setNumThreads(1)
 
-VERSION = "0.9.19-beta"
+VERSION = "0.9.20-beta"
 WINDOW_TITLE = "Maple Classic Exp Overlay"    # the version is shown in Settings
 OLD_TITLES = ("Maple EXP/hr",)               # what versions before 0.9.3 were called
 
@@ -110,6 +110,9 @@ WINDOW_GRACE = 4            # seconds a closed window still counts, so its last 
 WINDOW_NAMES = {"shop": "NPC shop", "storage": "Storage", "trade": "Trade"}
 POTION_SECONDS = 3          # how often the potion bar is read (a small picture, no need for more)
 POTION_FULL_LOOK = 15       # every this many reads the bar is looked for over its whole search range again
+# Status row is one strip: LV · class · HP [cur/max] · MP [cur/max] · EXP n [pct%].
+# HP bar starts ~31–35 digit-heights left of EXP (see read_job); keep this much so HP+MP stay in the EXP box.
+STATUS_ROW_LEFT = 72
 NOTICE_SECONDS = 2          # how often the right-side gain notices are OCR'd (etc value + notice mesos)
 OUTLINE_SECONDS = 8         # how often the (costly) search for a see-through mesos box may run
 LEVEL_RECHECK_SECONDS = 30  # a level read from the badge is looked at again this often (it only changes at a level-up)
@@ -152,7 +155,13 @@ SHAPE_BLURBS = {"square": "The narrow card: the big number, the level bar and St
                 "wide": "Longer sideways: the level bar on top and four numbers in a row.",
                 "bar": "One thin strip with the main numbers and a slim level bar."}
 # What's new, shown once after updating to a version (plain words, newest changes only). A version with no entry shows nothing.
-WHATS_NEW = {"0.9.19-beta": (
+WHATS_NEW = {"0.9.20-beta": (
+    (None, None, (
+        ("head", "HP / MP from the same row as EXP"),
+        "The status strip is one line: HP, MP, then EXP. The overlay now keeps that whole row "
+        "(expands left from EXP) and reads HP/MP with the same digit templates — so potion cost "
+        "and Crit Recovery can track off the numbers you already see.")),),
+    "0.9.19-beta": (
     (None, None, (
         ("head", "Potion cost fixed (Crit Recovery)"),
         "Orange Potion, Lemon and other common drinks were being counted as Critical Recovery when the "
@@ -1897,10 +1906,10 @@ Reading = namedtuple("Reading", "where candidates confident text image boxes map
 
 
 def _view(img, lay):
-    """Crop around the EXP text and the digit boxes in it, for View capture."""
+    """Crop around the status row (HP/MP left of EXP) and the digit boxes, for View capture."""
     g = lay.gh
-    x0, x1 = max(0, int(lay.box[0] - 2 * g)), min(img.shape[1], int(lay.box[2] + g))
-    y0, y1 = max(0, int(lay.cy - 1.2 * g)), min(img.shape[0], int(lay.cy + 1.2 * g))
+    x0, x1 = max(0, int(lay.box[0] - STATUS_ROW_LEFT * g)), min(img.shape[1], int(lay.box[2] + g))
+    y0, y1 = max(0, int(lay.cy - 2.0 * g)), min(img.shape[0], int(lay.cy + 2.0 * g))
     boxes = [(c[0] - c[1] / 2 - x0, lay.cy - g / 2 - y0, c[0] + c[1] / 2 - x0, lay.cy + g / 2 - y0, kind)
              for kind, cells in (("exp", lay.exp), ("pct", _pct_cells(lay))) for c in cells]
     return img[y0:y1, x0:x1].copy(), boxes
@@ -1959,7 +1968,8 @@ class ScreenReader:
         self.bar_ok = False         # last potion look found the bar (even if every slot is empty)
         self.potion_look = None     # {"image", "text", "scale"} from the last bar look (View capture)
         self.vitals_on = True       # read HP/MP [cur/max] (set from Settings)
-        self.vitals_look = None     # {"image", "text"} last vitals crop
+        self.vitals_look = None     # {"image", "text", "boxes"} last vitals crop
+        self._vitals_cache = None   # (Vitals, monotonic) from the EXP status-strip grab
         self.next_vitals = 0.0
         self.next_outline = 0.0     # the earliest time to search for a see-through mesos box again
         self.party_area = None      # where the party list was last seen, on screen
@@ -2331,6 +2341,9 @@ class ScreenReader:
         wx, wy, ww, wh = rect
         where = f"MapleStory window {ww}x{wh}"
         started = time.perf_counter()
+        if self.box and self.gh and self.box[2] < 45 * self.gh:
+            # Old tight EXP-only lock (pre-0.9.20): drop it so the next search keeps HP+MP.
+            self.box = None
         if self.box:
             bx, by, bw, bh = self.box
             if self._blocked(wx + bx, wy + by, bw, bh):
@@ -2342,6 +2355,9 @@ class ScreenReader:
             if reading.confident:
                 self.misses = 0
                 self._remember(lay, rect, shot)
+                # Same grab as EXP: HP/MP sit left on this strip once the box was expanded.
+                if shot:
+                    self._vitals_from_status_image(shot[0])
                 return reading
             # Not reading cleanly here (a dialog in the way, or this was the wrong spot):
             # after a few tries, look for the EXP text again.
@@ -2367,15 +2383,17 @@ class ScreenReader:
             return self._shadow_look(capture, rect, shot, reading, None, started)     # (v2 may still see it)
         img, sx, sy = shot
         g = lay.gh
-        lead = g if lay.exp else 5.5 * g       # (a %-only bar is found by its label, so the label stays in the spot)
+        # Always keep HP + MP on the same row as EXP (not just a sliver left of the EXP digits).
+        lead = max(g if lay.exp else 5.5 * g, STATUS_ROW_LEFT * g)
         x0, x1 = max(0, int(lay.box[0] - lead)), min(img.shape[1], int(lay.box[2] + 6 * g))
-        y0, y1 = max(0, int(lay.cy - 1.4 * g)), min(img.shape[0], int(lay.cy + 1.4 * g))
+        y0, y1 = max(0, int(lay.cy - 2.2 * g)), min(img.shape[0], int(lay.cy + 2.2 * g))
         reading, lay = self._read(shot, where, lay)
         reading = self._shadow_look(capture, rect, shot, reading, lay, started)
         if reading.confident:             # only remember a spot whose digits match the game font
             self.box = (sx - wx + x0, sy - wy + y0, x1 - x0, y1 - y0)
             self.misses = 0
             self._remember(lay, rect, shot)
+            self._vitals_from_status_image(shot[0])
         return reading
 
     def _shadow_look(self, capture, rect, shot, reading, lay, started):
@@ -2628,34 +2646,55 @@ class ScreenReader:
             self._part_failed("notices", e)
             return None
 
-    def _read_vitals(self, capture, rect, notes):
-        """HP/MP [current/max] from the status bar left of EXP, or None if this look couldn't try."""
-        capture = self.capture = as_capture(capture)
-        if not self.templates or not self.box or not self.gh:
+    def _vitals_from_status_image(self, img):
+        """Read HP/MP off a status-row picture that already holds them (same strip as EXP)."""
+        if not self.vitals_on or not self.templates or img is None or img.size == 0:
             return None
+        got, boxes = vitals.read_vitals(img, self.templates, sys.modules[__name__])
+        text = " · ".join(
+            f"{label} {v.current}/{v.max}" for label, v in (("HP", got.hp), ("MP", got.mp)) if v)
+        self.vitals_look = {"image": img.copy(), "text": text or "nothing", "boxes": boxes}
+        self._vitals_cache = (got, time.monotonic()) if (got.hp or got.mp) else None
+        return got
+
+    def _read_vitals(self, capture, rect, notes):
+        """HP/MP [current/max] on the same status row as EXP, or None if this look couldn't try.
+
+        Layout (left → right): class · HP [cur/max] · MP [cur/max] · EXP n [pct%].
+        Prefer the locked EXP strip once it was expanded left (STATUS_ROW_LEFT); otherwise
+        grab from the EXP anchor the same way class reading does.
+        """
+        capture = self.capture = as_capture(capture)
+        if not self.templates or not self.gh:
+            return None
+        # Fresh from the EXP grab this look?
+        cached = getattr(self, "_vitals_cache", None)
+        if cached and time.monotonic() - cached[1] < 1.5:
+            return cached[0]
         wx, wy, ww, wh = rect
         g = self.gh
-        # EXP number starts near box[0]; HP/MP sit left of it on the same row (same strip as class).
-        ex0 = wx + self.box[0]
-        cy = wy + (self.box[1] + self.box[3]) / 2
-        x0 = max(wx, int(ex0 - 70 * g))
-        x1 = min(wx + ww, int(ex0 + 2 * g))
-        y0 = max(wy, int(cy - 3 * g))
-        y1 = min(wy + wh, int(cy + 4 * g))
+        # Wide EXP box already includes HP+MP on the same row.
+        if self.box and self.box[2] >= 45 * g:
+            bx, by, bw, bh = self.box
+            if self._blocked(wx + bx, wy + by, bw, bh, margin=2):
+                notes.append("This window is covering HP/MP.")
+                return None
+            shot = capture.grab(wx + bx, wy + by, bw, bh)
+            return self._vitals_from_status_image(shot[0]) if shot else None
+        if not self.exp_anchor:
+            return None
+        ax, ay = self.exp_anchor          # window-relative: EXP number start, row centre
+        x0 = max(wx, int(wx + ax - STATUS_ROW_LEFT * g))
+        x1 = min(wx + ww, int(wx + ax + 26 * g))
+        y0 = max(wy, int(wy + ay - 3 * g))
+        y1 = min(wy + wh, int(wy + ay + 4 * g))
         if x1 - x0 < 8 * g or y1 - y0 < 2 * g:
             return None
         if self._blocked(x0, y0, x1 - x0, y1 - y0, margin=2):
             notes.append("This window is covering HP/MP.")
             return None
         shot = capture.grab(x0, y0, x1 - x0, y1 - y0)
-        if not shot:
-            return None
-        img = shot[0]
-        got, boxes = vitals.read_vitals(img, self.templates, sys.modules[__name__])
-        text = " · ".join(
-            f"{label} {v.current}/{v.max}" for label, v in (("HP", got.hp), ("MP", got.mp)) if v)
-        self.vitals_look = {"image": img.copy(), "text": text or "nothing", "boxes": boxes}
-        return got
+        return self._vitals_from_status_image(shot[0]) if shot else None
 
     def _read_potion_bar(self, capture, rect, notes):
         """The potions and food on the potion bar as a tuple of potions.Slot (empty: none on the

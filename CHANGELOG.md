@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.20-beta
+
+**HP / MP on the same row as EXP**
+- The status bar is one strip: **HP [cur/max] · MP [cur/max] · EXP**. The EXP lock now expands **left** (~72 digit heights) so HP and MP stay in that crop, and both are read with the same digit templates as EXP (same path as class reading’s EXP anchor). Old tight EXP-only locks are dropped once so the wider strip is re-learned. Potion cost / Crit Recovery need those numbers.
+
 ## 0.9.19-beta
 
 **Potion cost stuck at 0 with Critical Recovery**
